@@ -1,0 +1,38 @@
+# 一键启动：后端(FastAPI) + 前端(React) + 向量库
+# 启动：docker compose up --build
+# 停止：docker compose down
+
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: ai-knowledge-agent-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_BASE_URL=${OPENAI_BASE_URL}
+      # TODO: 按需补充向量库 / 数据库等环境变量
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: ai-knowledge-agent-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0 --port 5173
+    depends_on:
+      - backend
+
+  # TODO: 需要向量库时取消注释（例如 Chroma）
+  # vector-db:
+  #   image: chromadb/chroma:latest
+  #   container_name: ai-knowledge-agent-vector
+  #   ports:
+  #     - "8001:8000"
