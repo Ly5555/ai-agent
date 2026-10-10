@@ -1,20 +1,20 @@
 # AI Knowledge Agent
 
-> 一个基于 RAG + LangGraph 的智能问答 Agent 项目（面试作品集）。
+> 基于 RAG + LangGraph 的智能问答 Agent 项目（面试作品集）。
 
 ## 项目简介
 
-- **一句话定位**：（TODO：用一句话说明这个 Agent 能帮用户做什么，例如“基于私有知识库的 RAG 问答 Agent”）
+- **一句话定位**：（TODO：基于私有知识库的 RAG 问答 Agent）
 - **目标用户**：（TODO）
-- **核心亮点**：（TODO：RAG 检索、多步推理、工具调用、流式输出……列 2-3 个）
+- **核心亮点**：（TODO：RAG 检索、多步推理、工具调用、流式输出……）
 
 ## 技术栈
 
 | 层 | 技术 |
 | --- | --- |
-| 后端 | FastAPI + LangGraph + (LLM 网关) |
-| 检索 | RAG（向量库 + 召回 + 重排） |
-| 前端 | React + Vite + TypeScript |
+| 后端 | FastAPI + LangGraph + Pydantic |
+| 检索 | RAG（向量库 + 召回 + 重排，TODO） |
+| 前端 | React + Vite + TypeScript + ReactFlow + React Router |
 | 部署 | Docker Compose 一键启动 |
 
 ## 目录结构
@@ -22,46 +22,68 @@
 ```
 ai-knowledge-agent/
 ├── README.md            # 项目说明（本文件）
-├── docker-compose.yml   # 一键启动所有服务
+├── docker-compose.yml   # 一键启动（前端代理自动转发 /api 到后端）
 ├── backend/             # 后端
 │   ├── requirements.txt
-│   ├── app/
-│   │   ├── main.py      # FastAPI 入口
-│   │   ├── agents/      # LangGraph Agent 逻辑
-│   │   ├── rag/         # RAG 检索逻辑
-│   │   └── tools/       # 工具函数
+│   └── app/
+│       ├── main.py      # FastAPI 入口（挂载路由 + CORS）
+│       ├── config.py    # 配置（LLM 网关 / CORS 来源，环境变量驱动）
+│       ├── models/      # Pydantic 数据模型（ChatRequest / ChatResponse）
+│       ├── services/    # 服务层：编排 Agent 调用
+│       ├── agents/      # 智能体实现（LangGraph 图定义）
+│       └── api/         # API 路由（/api/chat、/api/health）
 ├── frontend/            # 前端
 │   ├── package.json
-│   ├── src/
-│   │   ├── components/  # React 组件
-│   │   ├── hooks/       # 自定义 Hooks
-│   │   └── services/    # API 调用封装
+│   ├── index.html
+│   ├── vite.config.ts   # 开发代理：/api、/health → 后端 8000
+│   └── src/
+│       ├── main.tsx     # 入口
+│       ├── App.tsx      # 根组件（RouterProvider）
+│       ├── views/       # 页面组件（CanvasView 画布 / ChatView 聊天）
+│       ├── services/    # API 调用封装（api.ts）
+│       ├── types/       # TypeScript 类型定义
+│       └── router/      # 路由配置
 └── docs/                # 架构图、接口文档
 ```
 
 ## 快速开始
 
 ```bash
-# 一键启动（后端 + 前端 + 依赖服务）
-docker compose up --build
+# 1) 后端
+cd backend
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload        # http://localhost:8000/docs
 
-# 或本地分模块启动
-cd backend && pip install -r requirements.txt && uvicorn app.main:app --reload
-cd frontend && npm install && npm run dev
+# 2) 前端（另开一个终端）
+cd frontend
+npm install
+npm run dev                          # http://localhost:5173
+
+# 或一键启动（含 Docker）
+docker compose up --build
 ```
 
-## 架构图
+## 前后端如何连通
 
-> 见 `docs/` 目录（TODO：放一张架构图，面试加分项）。
+- 开发期：前端 `vite.config.ts` 已配代理，`/api`、`/health` 自动转发到后端 `8000`，
+  因此 `services/api.ts` 用相对路径即可，无需处理跨域。
+- 后端也开了 CORS（`config.py` 的 `cors_origins`），直接用 `http://localhost:8000` 调也行。
+- Docker 下前端通过环境变量 `VITE_BACKEND_PROXY_TARGET=http://backend:8000` 指向容器内的后端服务。
 
-## API 文档
+## API 一览
 
-> 见 `docs/` 目录（TODO：接口说明 / OpenAPI 截图）。
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/health` | 健康检查 |
+| POST | `/api/chat` | 对话（body: `{query, history}`） |
+
+> 未配置 `LLM_API_KEY` 时，`/api/chat` 返回 mock 回答，保证本地能跑通；
+> 配上 GLM-4-flash / OpenAI 网关后自动走真实 LLM。
 
 ## 待完成
 
-- [ ] Agent 主流程（LangGraph 图定义）
-- [ ] RAG 召回与重排
-- [ ] 工具注册与调用
-- [ ] 前端对话界面
-- [ ] 架构图与接口文档
+- [ ] RAG 召回与重排（agents/graph.py 的 retrieve 节点）
+- [ ] 工具节点 + 条件分支
+- [ ] 前端聊天界面联调真实 LLM
+- [ ] 架构图与接口文档（docs/）

@@ -1,12 +1,7 @@
-fastapi>=0.110
-uvicorn[standard]>=0.29
+fastapi>=0.115,<1.0
+uvicorn[standard]>=0.30,<1.0
+pydantic>=2.6
+pydantic-settings>=2.2
 langgraph>=0.2
 langchain>=0.2
 langchain-openai>=0.1
-pydantic>=2.6
-pydantic-settings>=2.2
-# TODO: 按需补充
-# chromadb>=0.5          # 向量库
-# sqlalchemy>=2.0         # 数据库 ORM
-# redis>=5.0              # 缓存
-# python-dotenv>=1.0      # 环境变量

@@ -1,35 +1,25 @@
 """FastAPI 入口。
 
 启动：uvicorn app.main:app --reload
-接口文档：http://localhost:8000/docs
+文档：http://localhost:8000/docs
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI(title="AI Knowledge Agent", version="0.1.0")
+from app.api.chat import router as chat_router
+from app.config import settings
 
-# 允许前端跨域（开发期 localhost:5173）
+app = FastAPI(title=settings.app_name, version="0.1.0")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok"}
-
-
-# TODO: 接入 LangGraph Agent
-# from app.agents.graph import build_graph
-# @app.post("/chat")
-# async def chat(query: str):
-#     graph = build_graph()
-#     result = await graph.ainvoke({"query": query})
-#     return result
+app.include_router(chat_router)
 
 
 if __name__ == "__main__":
