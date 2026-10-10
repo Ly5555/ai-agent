@@ -83,6 +83,8 @@ docker compose up --build
 
 ## 待完成
 
+> 📅 详细施工计划见 [docs/AGENT_BUILD_PLAN.md](docs/AGENT_BUILD_PLAN.md)（21 天，每天一个可验收目标）
+
 - [ ] RAG 召回与重排（agents/graph.py 的 retrieve 节点）
 - [ ] 工具节点 + 条件分支
 - [ ] 前端聊天界面联调真实 LLM
