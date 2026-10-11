@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     llm_base_url: str = "https://open.bigmodel.cn/api/paas/v4/"
     llm_model: str = "glm-4-flash"
 
+    # 向量模型（与 chat 同网关同 Key）
+    embedding_model: str = "embedding-3"
+
     # 允许跨域的前端来源（开发期 Vite 默认端口 5173）
     cors_origins: list[str] = ["http://localhost:5173", "http://127.0.0.1:5173"]
 

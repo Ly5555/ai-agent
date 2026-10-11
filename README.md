@@ -24,14 +24,18 @@ ai-knowledge-agent/
 ├── README.md            # 项目说明（本文件）
 ├── docker-compose.yml   # 一键启动（前端代理自动转发 /api 到后端）
 ├── backend/             # 后端
-│   ├── requirements.txt
-│   └── app/
-│       ├── main.py      # FastAPI 入口（挂载路由 + CORS）
-│       ├── config.py    # 配置（LLM 网关 / CORS 来源，环境变量驱动）
-│       ├── models/      # Pydantic 数据模型（ChatRequest / ChatResponse）
-│       ├── services/    # 服务层：编排 Agent 调用
-│       ├── agents/      # 智能体实现（LangGraph 图定义）
-│       └── api/         # API 路由（/api/chat、/api/health）
+│   ├── main.py          # FastAPI 入口（/api/chat、/api/health）
+│   ├── agent.py         # LangGraph 对话图与请求/响应模型
+│   ├── vector_store.py  # ChromaDB 入库与检索
+│   ├── document_loader.py # PDF / Markdown / TXT 加载
+│   ├── chunker.py       # 中文文本分块
+│   ├── embeddings.py    # GLM embedding-3 向量化
+│   ├── config.py        # 模型网关与 CORS 配置
+│   └── requirements.txt
+├── data/                # 项目数据（挂载给 Docker 后端）
+│   ├── docs/            # 文档，按仓库目录隔离
+│   ├── uploads/         # 上传原文件
+│   └── chroma/          # 本地向量库（Git 忽略）
 ├── frontend/            # 前端
 │   ├── package.json
 │   ├── index.html
@@ -53,7 +57,7 @@ ai-knowledge-agent/
 cd backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-uvicorn app.main:app --reload        # http://localhost:8000/docs
+uvicorn main:app --reload            # http://localhost:8000/docs
 
 # 2) 前端（另开一个终端）
 cd frontend
@@ -85,7 +89,7 @@ docker compose up --build
 
 > 📅 详细施工计划见 [docs/AGENT_BUILD_PLAN.md](docs/AGENT_BUILD_PLAN.md)（21 天，每天一个可验收目标）
 
-- [ ] RAG 召回与重排（agents/graph.py 的 retrieve 节点）
+- [ ] RAG 召回与重排（backend/agent.py 的 retrieve 节点）
 - [ ] 工具节点 + 条件分支
 - [ ] 前端聊天界面联调真实 LLM
 - [ ] 架构图与接口文档（docs/）

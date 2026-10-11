@@ -17,17 +17,17 @@
 ### D1｜选型 + 环境准备
 - [x] 安装依赖：`chromadb`、`pypdf`、`langchain-community`（分块器）——已装入 backend/.venv（chromadb 1.5.9 / pypdf 6.20.0 / langchain-community 0.4.2）
 - [x] 确定 embedding 方案：**GLM embedding-3**（2048 维，与 GLM-4-flash 同网关同 Key；OpenAI 兼容 /embeddings 接口）
-- [x] 建目录：`backend/data/docs/华东仓/`、`backend/data/docs/华南仓/`（各含 .gitkeep 占位）
+- [x] 建目录：`data/docs/华东仓/`、`data/docs/华南仓/`（各含 .gitkeep 占位）
 
-**✅ 完成标准**：写个 10 行小脚本，调通一次 embedding 接口，拿到向量。（✔️ D1 完成：`backend/scripts/check_embedding.py` 实测 2048 维、非零向量）
+**✅ 完成标准**：写个小脚本，调通一次 embedding 接口，拿到向量。（✔️ D1 完成：`backend/embeddings.py` 的自检入口已实测 2048 维、非零向量）
 
 ### D2｜文档入库脚本（核心）
-- [ ] 新建 `backend/app/services/ingest.py`：
-  - 加载 PDF / Markdown → `RecursiveCharacterTextSplitter` 分块（chunk 500~800 字、overlap 100）
-  - 写入 ChromaDB，**每个分块带 metadata：`warehouse` / `source` / `page`**
-- [ ] 手写一份假的《华东仓SOP.md》当测试素材
+- [x] 新建 `backend/vector_store.py`：
+  - 加载 PDF / Markdown → `RecursiveCharacterTextSplitter` 分块（实测：chunk 600 字、overlap 100，中文标点分隔符）
+  - 写入 ChromaDB，**每个分块带 metadata：`warehouse` / `source` / `page`**（已实测可过滤）
+- [x] 手写一份假的《华东仓SOP.md》当测试素材（另补了华南仓SOP，内容故意与华东仓有差异）
 
-**✅ 完成标准**：命令行跑一次脚本，Chroma 里能查到分块数和 metadata。
+**✅ 完成标准**：命令行跑一次脚本，Chroma 里能查到分块数和 metadata。（✔️ 实测：两仓 4 块入库，重跑不翻倍，warehouse 过滤正常）
 
 ### D3｜上传接口
 - [ ] `api/` 新增 `POST /api/upload`（FastAPI `UploadFile`），接收文件 + `warehouse` 参数
@@ -37,7 +37,7 @@
 **✅ 完成标准**：curl 或 /docs 页面上传一个 PDF，返回"入库 N 块"。
 
 ### D4｜检索服务
-- [ ] 新建 `backend/app/services/retriever.py`：
+- [ ] 在 `backend/vector_store.py` 的 `query()` 基础上补齐检索服务：
   - 输入 query + warehouse → ChromaDB 相似度检索 top-k
   - **强制带 metadata 过滤** → 返回块列表（含来源信息）
 - [ ] （可选，有余力再做）BM25 混合召回（`rank_bm25`）
@@ -45,7 +45,7 @@
 **✅ 完成标准**：脚本验证——问华东仓的问题只会召回华东仓的块。
 
 ### D5｜retrieve / generate 换成真的（关键一天）
-- [ ] `agents/graph.py`：`retrieve` 节点调 D4，检索结果写入 state（如 `context: list[dict]`）
+- [ ] `backend/agent.py`：`retrieve` 节点调 D4，检索结果写入 state（如 `context: list[dict]`）
 - [ ] `generate` 节点重写 prompt：系统指令 + 检索上下文 + **history 真正拼进 prompt**（多轮对话从今天起由假变真）+ 用户问题
 
 **✅ 完成标准**：前端 `/chat` 问 SOP 里的内容，能得到基于知识库的回答。
@@ -53,7 +53,7 @@
 ### D6｜来源引用 + 修复日
 - [ ] generate 回答末尾列出引用来源（格式："根据《华东仓SOP》第 3 节…"，由 LLM 基于上下文标注）
 - [ ] 修 D2~D5 积累的小 bug
-- [ ] 把 `agent_service.py` 里"异常就 mock"的兜底改成**先记日志再兜底**（避免 bug 被静默吞掉）
+- [ ] 把 `backend/agent.py` 里"异常就 mock"的兜底改成**先记日志再兜底**（避免 bug 被静默吞掉）
 
 **✅ 完成标准**：10 个自测问题里 ≥7 个回答带正确来源；多轮指代（"它呢？"）能接上。
 
@@ -102,7 +102,7 @@ retrieve → grade →(够)→ generate
 ### D12｜回答前反省（Grounding 逐句校验）+ 知识缺口记录
 - [ ] 重试耗尽仍无结果 → 回答"知识库中暂无相关信息"（prompt 里严禁编造）
 - [ ] **真正的 Grounding 校验（锁定的反省①）**：generate 产出答案后，多一次轻量 LLM call，让模型逐句标注"该句是否有检索上下文依据"；无依据的句子直接删除，或降级为"这一点我不太确定"——面试被问"你的 Grounding 校验什么"时能答出这句
-- [ ] 同时把该 query 写入 `backend/data/gaps.jsonl`（仓库、问题、时间）——知识缺口的数据源
+- [ ] 同时把该 query 写入 `data/gaps.jsonl`（仓库、问题、时间）——知识缺口的数据源
 
 **✅ 完成标准**：刁钻问题得到诚实回答；回答里不出现"凭空冒出来"的句子（逐句依据可解释）；gaps 文件里新增一条记录。
 

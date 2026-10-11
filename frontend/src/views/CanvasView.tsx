@@ -15,7 +15,7 @@ export default function CanvasView() {
         setStatus(`🚀 后端连接成功！状态: ${data.status}`);
       } catch (error: any) {
         setStatus(
-          `⚠️ 后端连接失败: ${error?.message}（请确认后端已启动：uvicorn app.main:app --reload）`,
+          `⚠️ 后端连接失败: ${error?.message}（请确认后端已启动：cd backend && uvicorn main:app --reload）`,
         );
       }
     }
