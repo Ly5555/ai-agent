@@ -23,9 +23,9 @@ export default function CanvasView() {
   }, []);
 
   const initialNodes = [
-    { id: "1", position: { x: 250, y: 5 }, data: { label: "输入节点 (Start)" } },
-    { id: "2", position: { x: 100, y: 100 }, data: { label: "AI Agent 节点" } },
-    { id: "3", position: { x: 400, y: 100 }, data: { label: "工具调用节点" } },
+    { id: "1", position: { x: 250, y: 5 }, data: { label: "用户问题" } },
+    { id: "2", position: { x: 100, y: 100 }, data: { label: "知识库检索" } },
+    { id: "3", position: { x: 400, y: 100 }, data: { label: "回答生成" } },
   ];
 
   const initialEdges = [
@@ -48,7 +48,7 @@ export default function CanvasView() {
       >
         <p style={{ margin: 0, fontSize: "14px" }}>{status}</p>
         <Link to="/chat" style={{ color: "#4da3ff", fontSize: "14px" }}>
-          去聊天 →
+          打开个人知识库 →
         </Link>
       </div>
       <div style={{ flex: 1 }}>

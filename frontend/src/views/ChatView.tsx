@@ -30,7 +30,8 @@ export default function ChatView() {
 
   return (
     <div style={{ maxWidth: 720, margin: "40px auto", fontFamily: "system-ui" }}>
-      <h1>AI Knowledge Agent</h1>
+      <h1>个人知识库 Agent</h1>
+      <p style={{ color: "#666" }}>基于你的笔记和文档回答，并在后续版本提供来源引用。</p>
       <div
         style={{
           border: "1px solid #ddd",
@@ -39,7 +40,11 @@ export default function ChatView() {
           minHeight: 240,
         }}
       >
-        {messages.length === 0 && <p style={{ color: "#999" }}>开始对话吧～</p>}
+        {messages.length === 0 && (
+          <p style={{ color: "#999" }}>
+            可以问：“帮我总结 Python 学习笔记”或“JSON 文件记忆怎么实现？”
+          </p>
+        )}
         {messages.map((m, i) => (
           <p key={i}>
             <b>{m.role === "user" ? "你" : "Agent"}：</b>
@@ -52,7 +57,7 @@ export default function ChatView() {
         <input
           style={{ flex: 1, padding: 8 }}
           value={input}
-          placeholder="输入你的问题"
+          placeholder="向你的知识库提问"
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
         />

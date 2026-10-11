@@ -36,7 +36,7 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
 
 if __name__ == "__main__":
     # D1 验证：调通 GLM embedding-3，拿到一句向量的维度与非零校验
-    vector = make_embeddings().embed_query("华东仓退货流程")
+    vector = make_embeddings().embed_query("Python 中 JSON 文件如何读写")
     print(f"向量维度: {len(vector)}（期望 2048）")
     print(f"向量绝对值之和: {sum(abs(x) for x in vector):.4f}（应 > 0，防零向量 bug）")
     print(f"前 5 维: {vector[:5]}")

@@ -1,11 +1,11 @@
-# 团队知识助手 —— 会查资料、会反省、会干活的文档问答 Agent（21 天基础 + 多 Agent 对比）
+# 个人知识库 Agent —— 会查资料、会反省、会干活的文档问答 Agent（21 天基础 + 多 Agent 对比）
 
-> 项目定位（面试主标题）：**团队知识助手**——一个会查资料、会反省、会干活的文档问答 Agent。
+> 项目定位（面试主标题）：**个人知识库 Agent**——一个会查资料、会反省、会干活的文档问答 Agent。
 > 三大能力映射：
-> - **会查资料** = RAG 检索（按仓库隔离，多仓库是差异化特性）
+> - **会查资料** = RAG 检索（按知识分类整理，分类检索是差异化特性）
 > - **会反省** = ①回答前反省(Grounding：生成后逐句校验依据，无依据则删/降级) ②干活后反省(工具结果校验，不对重试/换工具) ③检索后反省(Self-RAG：召回不够改写 query 重查，D9 核心)
 > - **会干活** = 基础三件套（calculator / 当前时间 / web_search）
-> 差异化卖点：多仓库知识隔离 + 自动沉淀 FAQ（生产侧 Agent）。
+> 差异化卖点：个人知识分类 + 自动沉淀 FAQ（生产侧 Agent）。
 >
 > 使用规则：每天一个 git commit；达到"✅ 完成标准"就走人，别过度打磨；
 > 卡住 2 小时就去搜/问，卡住半天就砍掉当天功能的可选项（主链路永远优先）。
@@ -17,41 +17,41 @@
 ### D1｜选型 + 环境准备
 - [x] 安装依赖：`chromadb`、`pypdf`、`langchain-community`（分块器）——已装入 backend/.venv（chromadb 1.5.9 / pypdf 6.20.0 / langchain-community 0.4.2）
 - [x] 确定 embedding 方案：**GLM embedding-3**（2048 维，与 GLM-4-flash 同网关同 Key；OpenAI 兼容 /embeddings 接口）
-- [x] 建目录：`data/docs/华东仓/`、`data/docs/华南仓/`（各含 .gitkeep 占位）
+- [x] 建目录：`data/docs/Python学习笔记/`、`data/docs/前端学习笔记/`（各含 .gitkeep 占位）
 
 **✅ 完成标准**：写个小脚本，调通一次 embedding 接口，拿到向量。（✔️ D1 完成：`backend/embeddings.py` 的自检入口已实测 2048 维、非零向量）
 
 ### D2｜文档入库脚本（核心）
 - [x] 新建 `backend/vector_store.py`：
   - 加载 PDF / Markdown → `RecursiveCharacterTextSplitter` 分块（实测：chunk 600 字、overlap 100，中文标点分隔符）
-  - 写入 ChromaDB，**每个分块带 metadata：`warehouse` / `source` / `page`**（已实测可过滤）
-- [x] 手写一份假的《华东仓SOP.md》当测试素材（另补了华南仓SOP，内容故意与华东仓有差异）
+  - 写入 ChromaDB，**每个分块带 metadata：`collection` / `source` / `page`**（已实测可过滤）
+- [x] 准备《Python学习笔记.md》和《React学习笔记.md》作为测试素材
 
-**✅ 完成标准**：命令行跑一次脚本，Chroma 里能查到分块数和 metadata。（✔️ 实测：两仓 4 块入库，重跑不翻倍，warehouse 过滤正常）
+**✅ 完成标准**：命令行跑一次脚本，Chroma 里能查到分块数和 metadata。
 
 ### D3｜上传接口
-- [ ] `api/` 新增 `POST /api/upload`（FastAPI `UploadFile`），接收文件 + `warehouse` 参数
-- [ ] 文件落盘到 `data/docs/`，调用 D2 的 ingest
-- [ ] `models/` 加对应请求 / 响应模型
+- [ ] 在 `backend/main.py` 新增 `POST /api/upload`（FastAPI `UploadFile`），接收文件 + `collection` 参数
+- [ ] 文件落盘到 `data/docs/<知识分类>/`，调用 D2 的 ingest
+- [ ] 在 `backend/agent.py` 或独立模型文件中补齐对应响应模型
 
 **✅ 完成标准**：curl 或 /docs 页面上传一个 PDF，返回"入库 N 块"。
 
 ### D4｜检索服务
 - [ ] 在 `backend/vector_store.py` 的 `query()` 基础上补齐检索服务：
-  - 输入 query + warehouse → ChromaDB 相似度检索 top-k
+  - 输入 query + collection → ChromaDB 相似度检索 top-k
   - **强制带 metadata 过滤** → 返回块列表（含来源信息）
 - [ ] （可选，有余力再做）BM25 混合召回（`rank_bm25`）
 
-**✅ 完成标准**：脚本验证——问华东仓的问题只会召回华东仓的块。
+**✅ 完成标准**：脚本验证——问 Python 笔记的问题只会召回 Python 分类的块。
 
 ### D5｜retrieve / generate 换成真的（关键一天）
 - [ ] `backend/agent.py`：`retrieve` 节点调 D4，检索结果写入 state（如 `context: list[dict]`）
 - [ ] `generate` 节点重写 prompt：系统指令 + 检索上下文 + **history 真正拼进 prompt**（多轮对话从今天起由假变真）+ 用户问题
 
-**✅ 完成标准**：前端 `/chat` 问 SOP 里的内容，能得到基于知识库的回答。
+**✅ 完成标准**：前端 `/chat` 问笔记里的内容，能得到基于知识库的回答。
 
 ### D6｜来源引用 + 修复日
-- [ ] generate 回答末尾列出引用来源（格式："根据《华东仓SOP》第 3 节…"，由 LLM 基于上下文标注）
+- [ ] generate 回答末尾列出引用来源（格式："根据《Python学习笔记》第 3 节…"，由 LLM 基于上下文标注）
 - [ ] 修 D2~D5 积累的小 bug
 - [ ] 把 `backend/agent.py` 里"异常就 mock"的兜底改成**先记日志再兜底**（避免 bug 被静默吞掉）
 
@@ -83,7 +83,7 @@ retrieve → grade →(够)→ generate
                  →(不够且用完)→ fallback
 ```
 
-**✅ 完成标准**：故意问一个 SOP 里没有、但换个关键词能命中的问题，
+**✅ 完成标准**：故意问一个笔记里没有、但换个关键词能命中的问题，
 日志里能看到"检索→判否→改写→重查→回答"的完整轨迹。**这一刻项目才配叫 Agent。**
 > 注：这步是"**检索后反省 / Self-RAG**"——召回不够就改写 query 重查，是三种反省机制之③；①②③ 全部必做（①回答前 Grounding 在 D12，②干活后反省在 D11，③检索后反省即本日 D9）。
 
@@ -102,7 +102,7 @@ retrieve → grade →(够)→ generate
 ### D12｜回答前反省（Grounding 逐句校验）+ 知识缺口记录
 - [ ] 重试耗尽仍无结果 → 回答"知识库中暂无相关信息"（prompt 里严禁编造）
 - [ ] **真正的 Grounding 校验（锁定的反省①）**：generate 产出答案后，多一次轻量 LLM call，让模型逐句标注"该句是否有检索上下文依据"；无依据的句子直接删除，或降级为"这一点我不太确定"——面试被问"你的 Grounding 校验什么"时能答出这句
-- [ ] 同时把该 query 写入 `data/gaps.jsonl`（仓库、问题、时间）——知识缺口的数据源
+- [ ] 同时把该 query 写入 `data/gaps.jsonl`（知识分类、问题、时间）——知识缺口的数据源
 
 **✅ 完成标准**：刁钻问题得到诚实回答；回答里不出现"凭空冒出来"的句子（逐句依据可解释）；gaps 文件里新增一条记录。
 
@@ -118,7 +118,7 @@ retrieve → grade →(够)→ generate
 
 ### D14｜沉淀 Agent 图（新文件 `agents/curator.py`）
 - [ ] 输入：一批答疑记录（先手写一份假的 `faq_raw.md` 模拟群聊问答）
-- [ ] 流程：LLM 聚类高频问题 → 每个问题生成一条规范 FAQ 草稿（问题 + 标准答案 + 所属仓库）
+- [ ] 流程：LLM 聚类高频问题 → 每个问题生成一条规范 FAQ 草稿（问题 + 标准答案 + 所属知识分类）
 
 **✅ 完成标准**：20 条乱糟糟的答疑 → 自动归纳成 5~8 条 FAQ 草稿。
 
@@ -153,11 +153,11 @@ retrieve → grade →(够)→ generate
 
 **✅ 完成标准**：能看到 D12 记录的缺口列表。
 
-### D20｜多仓库演示剧本
-- [ ] 造假数据：华东仓、华南仓各一份 SOP PDF + 一份答疑记录，内容故意不同（如盘点周期不一样）
+### D20｜多分类资料演示剧本
+- [ ] 准备 Python、前端各一份学习笔记与一份答疑记录，内容主题明确区分
 - [ ] 写好演示 5 连问：
-  1. 单仓问题
-  2. 跨仓对比问题
+  1. 单分类问题
+  2. 跨分类对比问题
   3. 库里没有的问题（触发重试 + 诚实兜底）
   4. 天气问题（触发工具）
   5. 沉淀 FAQ 之后再问同一个问题
@@ -171,7 +171,7 @@ retrieve → grade →(够)→ generate
 - [ ] 准备面试话术：
   - 为什么用 LangGraph？→ 条件边和循环（固定链路做不到自我修正）
   - 怎么防幻觉？→ grade 重试 + 无结果明确拒答 + 来源引用
-  - 为什么按仓库隔离？→ metadata 过滤，新增仓库零成本
+  - 为什么按知识分类整理？→ metadata 过滤，新增分类零成本
   - 生产落地考虑？→ 数据脱敏 / 私有化模型网关 / 缺口看板驱动知识运营
   - 为什么 / 何时用多 Agent？→ 单 Agent 够简单场景；子能力需独立演进 / 隔离上下文 / 并行时才拆 Supervisor，代价是延迟与调试难
   - 三种架构怎么选？→ ReAct 简单提示驱动 / 图编排固定可控 / 多 Agent 子能力隔离并行，按场景取舍
@@ -205,11 +205,11 @@ retrieve → grade →(够)→ generate
 ## 面试讲述结构（两档，别一次性倒完）
 
 **15 秒电梯版（开场用）：**
-> "我做了「团队知识助手」：会查资料、会反省、会干活的文档问答 Agent，前端还能实时看到 Agent 的推理轨迹。"
+> "我做了「个人知识库 Agent」：会查资料、会反省、会干活的文档问答 Agent，前端还能实时看到 Agent 的推理轨迹。"
 
 **2 分钟展开版（被追问再上）：**
-> "会查资料（RAG，按仓库隔离）、会反省（回答前逐句 Grounding 校验 + 干活后工具结果校验 + 检索不够自动改写重查）、会干活（calculator / 时间 / 搜索工具）。
-> 各仓库 SOP 和答疑记录自动沉淀成知识库；查不到就明确说不知道并记录成知识缺口，绝不编造。
+> "会查资料（RAG，按知识分类整理）、会反省（回答前逐句 Grounding 校验 + 干活后工具结果校验 + 检索不够自动改写重查）、会干活（calculator / 时间 / 搜索工具）。
+> 个人学习笔记和项目资料自动沉淀成知识库；查不到就明确说不知道并记录成知识缺口，绝不编造。
 > 前端画布实时可视化 LangGraph 执行轨迹（含重试循环）。
 > 我还对比了单 Agent 图编排与多 Agent Supervisor 两种架构，结论是……（何时该用多 Agent）。"
 

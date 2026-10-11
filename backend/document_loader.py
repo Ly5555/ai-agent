@@ -5,7 +5,7 @@ from typing import Any
 from pypdf import PdfReader
 
 
-def load_file(path: Path, warehouse: str) -> list[dict[str, Any]]:
+def load_file(path: Path, collection: str) -> list[dict[str, Any]]:
     """把一个文件读成 [{text, metadata}, ...]，PDF 逐页提取。"""
     docs: list[dict[str, Any]] = []
     if path.suffix.lower() == ".pdf":
@@ -20,9 +20,9 @@ def load_file(path: Path, warehouse: str) -> list[dict[str, Any]]:
             docs.append({"text": text, "page": 1})
     for d in docs:
         d["metadata"] = {
-            "warehouse": warehouse,
+            "collection": collection,
             "source": path.name,
             "page": d["page"],
-            "type": "sop",
+            "type": "note",
         }
     return docs

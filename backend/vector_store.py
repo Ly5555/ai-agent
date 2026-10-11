@@ -1,14 +1,14 @@
 """向量库封装：Chroma 持久化 + 入库 + 查询。
 
-所有仓库共用一个 collection（warehouse_kb），靠 metadata.warehouse 过滤隔离，
-新增仓库零成本，也支持跨仓检索。
+所有个人资料共用一个 collection（personal_kb），靠 metadata.collection 过滤整理，
+新增知识分类零成本，也支持跨分类检索。
 
 数据位置（扁平化后）：
     向量库：<repo>/data/chroma
-    文档：  <repo>/data/docs/<仓库名>/*.pdf|md|txt
+    文档：  <repo>/data/docs/<知识分类>/*.pdf|md|txt
     上传：  <repo>/data/uploads/
 
-运行（在 backend/ 下，扫描并入库所有仓库文档）：
+运行（在 backend/ 下，扫描并入库所有知识分类文档）：
     .venv/bin/python vector_store.py
 """
 from pathlib import Path
@@ -25,7 +25,7 @@ from embeddings import embed_texts
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOCS_DIR = REPO_ROOT / "data" / "docs"
 CHROMA_DIR = REPO_ROOT / "data" / "chroma"
-COLLECTION_NAME = "warehouse_kb"
+COLLECTION_NAME = "personal_kb"
 
 
 def get_collection() -> chromadb.Collection:
@@ -36,44 +36,46 @@ def get_collection() -> chromadb.Collection:
     )
 
 
-def ingest_file(path: Path, warehouse: str) -> int:
+def ingest_file(path: Path, collection_name: str) -> int:
     """入库单个文件，返回写入的块数。"""
-    texts, metadatas = split_chunks(load_file(path, warehouse))
+    texts, metadatas = split_chunks(load_file(path, collection_name))
     if not texts:
         return 0
 
     vectors = embed_texts(texts)
 
-    collection = get_collection()
-    # 幂等：同仓库同文件名的旧块先删掉，重跑不会翻倍（chroma 多条件过滤需用 $and 组合）
-    collection.delete(where={"$and": [{"warehouse": warehouse}, {"source": path.name}]})
+    vector_collection = get_collection()
+    # 幂等：同分类同文件名的旧块先删掉，重跑不会翻倍（chroma 多条件过滤需用 $and 组合）
+    vector_collection.delete(
+        where={"$and": [{"collection": collection_name}, {"source": path.name}]}
+    )
 
-    ids = [f"{warehouse}:{path.name}:{i}" for i in range(len(texts))]
-    collection.add(ids=ids, documents=texts, metadatas=metadatas, embeddings=vectors)
+    ids = [f"{collection_name}:{path.name}:{i}" for i in range(len(texts))]
+    vector_collection.add(ids=ids, documents=texts, metadatas=metadatas, embeddings=vectors)
     return len(texts)
 
 
 def ingest_all() -> None:
-    """扫描 data/docs/<仓库名>/ 下所有支持的文件，逐仓库入库。"""
+    """扫描 data/docs/<知识分类>/ 下所有支持的文件，逐分类入库。"""
     total = 0
-    for warehouse_dir in sorted(DOCS_DIR.iterdir()):
-        if not warehouse_dir.is_dir():
+    for collection_dir in sorted(DOCS_DIR.iterdir()):
+        if not collection_dir.is_dir():
             continue
-        warehouse = warehouse_dir.name
-        for file in sorted(warehouse_dir.iterdir()):
+        collection_name = collection_dir.name
+        for file in sorted(collection_dir.iterdir()):
             if file.suffix.lower() not in {".pdf", ".md", ".txt"}:
                 continue
-            count = ingest_file(file, warehouse)
+            count = ingest_file(file, collection_name)
             total += count
-            print(f"[{warehouse}] {file.name} -> {count} 块")
+            print(f"[{collection_name}] {file.name} -> {count} 块")
     collection = get_collection()
     print(f"入库完成：本次共 {total} 块，库内现有 {collection.count()} 块")
 
 
-def query(question: str, warehouse: str | None = None, top_k: int = 4) -> list[dict[str, Any]]:
+def query(question: str, collection_name: str | None = None, top_k: int = 4) -> list[dict[str, Any]]:
     """检索 top_k 个相关块（面试核心：retrieve 节点会调它）。"""
     collection = get_collection()
-    where = {"warehouse": warehouse} if warehouse else None
+    where = {"collection": collection_name} if collection_name else None
     res = collection.query(
         query_embeddings=embed_texts([question]),
         n_results=top_k,

@@ -1,4 +1,4 @@
-"""LangGraph 智能体图 + 对外 run_agent() + 请求/响应模型。
+"""个人知识库 Agent：LangGraph 对话图 + 对外 run_agent() + 请求/响应模型。
 
 扁平化后所有 backend 模块都在同一层，互相直接 import（from config / from vector_store ...）。
 
