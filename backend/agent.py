@@ -15,7 +15,7 @@ from typing import Literal, TypedDict
 
 from pydantic import BaseModel
 
-from config import settings
+from config import make_http_client, settings
 
 
 # ---------- 请求 / 响应模型 ----------
@@ -57,6 +57,7 @@ def generate(state: ChatState) -> dict:
                 api_key=settings.llm_api_key,
                 base_url=settings.llm_base_url,
                 temperature=0.3,
+                http_client=make_http_client(),  # 直连智谱（忽略终端代理）
             )
             reply = llm.invoke(state["query"]).content
             return {"answer": reply}

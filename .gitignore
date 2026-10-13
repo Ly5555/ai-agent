@@ -17,3 +17,6 @@ dist/
 .DS_Store
 .vscode/
 .idea/
+
+# Agent 工作数据（记忆/会话，勿提交）
+.workbuddy/

@@ -13,7 +13,7 @@ SPLITTER = RecursiveCharacterTextSplitter(
 
 
 def split_chunks(docs: list[dict[str, Any]]) -> tuple[list[str], list[dict[str, Any]]]:
-    """逐条分块，metadata 随块继承（哪个仓、哪个文件、第几页）。"""
+    """逐条分块，metadata 随块继承（知识分类、文件名和页码）。"""
     texts: list[str] = []
     metadatas: list[dict[str, Any]] = []
     for d in docs:

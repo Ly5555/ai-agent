@@ -27,22 +27,22 @@
   - 写入 ChromaDB，**每个分块带 metadata：`collection` / `source` / `page`**（已实测可过滤）
 - [x] 准备《Python学习笔记.md》和《React学习笔记.md》作为测试素材
 
-**✅ 完成标准**：命令行跑一次脚本，Chroma 里能查到分块数和 metadata。
+**✅ 完成标准**：命令行跑一次脚本，Chroma 里能查到分块数和 metadata。（✔️ 实测两份示例资料各入库 1 块，metadata 含 collection/source/page）
 
 ### D3｜上传接口
-- [ ] 在 `backend/main.py` 新增 `POST /api/upload`（FastAPI `UploadFile`），接收文件 + `collection` 参数
-- [ ] 文件落盘到 `data/docs/<知识分类>/`，调用 D2 的 ingest
-- [ ] 在 `backend/agent.py` 或独立模型文件中补齐对应响应模型
+- [x] 在 `backend/main.py` 新增 `POST /api/upload`（FastAPI `UploadFile`），接收文件 + `collection` 参数
+- [x] 文件落盘到 `data/docs/<知识分类>/`，调用 D2 的 ingest
+- [x] 在 `backend/main.py` 补齐 `UploadResponse` 响应模型，并在前端提供上传入口
 
-**✅ 完成标准**：curl 或 /docs 页面上传一个 PDF，返回"入库 N 块"。
+**✅ 完成标准**：curl 或 /docs 页面上传一个 PDF，返回"入库 N 块"。（✔️ 实测上传 Markdown 返回 HTTP 200 与 1 块）
 
 ### D4｜检索服务
-- [ ] 在 `backend/vector_store.py` 的 `query()` 基础上补齐检索服务：
+- [x] 在 `backend/vector_store.py` 的 `query()` 基础上补齐检索服务：
   - 输入 query + collection → ChromaDB 相似度检索 top-k
   - **强制带 metadata 过滤** → 返回块列表（含来源信息）
 - [ ] （可选，有余力再做）BM25 混合召回（`rank_bm25`）
 
-**✅ 完成标准**：脚本验证——问 Python 笔记的问题只会召回 Python 分类的块。
+**✅ 完成标准**：脚本验证——问 Python 笔记的问题只会召回 Python 分类的块。（✔️ 实测 Python 与前端分类检索均只返回本分类资料）
 
 ### D5｜retrieve / generate 换成真的（关键一天）
 - [ ] `backend/agent.py`：`retrieve` 节点调 D4，检索结果写入 state（如 `context: list[dict]`）

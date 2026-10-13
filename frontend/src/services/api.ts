@@ -2,7 +2,7 @@
 // 默认 BASE_URL 为空，走 vite 的 /api 代理转发到后端 8000（本地与 docker 都通用）
 const BASE_URL = import.meta.env.VITE_API_BASE ?? "";
 
-import type { ChatRequest, ChatResponse } from "../types/chat";
+import type { ChatRequest, ChatResponse, UploadResponse } from "../types/chat";
 
 export async function chat(req: ChatRequest): Promise<ChatResponse> {
   const res = await fetch(`${BASE_URL}/api/chat`, {
@@ -23,6 +23,21 @@ export async function healthCheck(): Promise<{
   const res = await fetch(`${BASE_URL}/api/health`);
   if (!res.ok) {
     throw new Error(`请求失败: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export async function uploadDocument(
+  file: File,
+  collection: string,
+): Promise<UploadResponse> {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("collection", collection);
+  const res = await fetch(`${BASE_URL}/api/upload`, { method: "POST", body });
+  if (!res.ok) {
+    const detail = await res.json().catch(() => null);
+    throw new Error(detail?.detail ?? `上传失败: ${res.status}`);
   }
   return res.json();
 }

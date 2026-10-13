@@ -1,5 +1,6 @@
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.30,<1.0
+python-multipart>=0.0.9
 pydantic>=2.6
 pydantic-settings>=2.2
 langgraph>=0.2
@@ -7,4 +8,8 @@ langchain>=0.2
 langchain-openai>=0.1
 chromadb>=0.5
 pypdf>=4.0
+pymupdf>=1.24   # 优先用它抽 PDF 文字，能救回设计工具导出/缺 ToUnicode 的 PDF（pypdf 兜底）
+pillow>=10.0   # OCR：PyMuPDF 渲染页面成图，交给 OCR 引擎识别
+rapidocr-onnxruntime>=1.4   # OCR 主引擎：纯 pip、自带中文模型、无需任何系统二进制（poppler/tesseract 都不需要）
+pytesseract>=0.3   # OCR 回退引擎（可选）：需系统装 tesseract + chi_sim，无需 poppler
 langchain-community>=0.2

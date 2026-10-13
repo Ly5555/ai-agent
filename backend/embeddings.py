@@ -8,7 +8,7 @@
 """
 from langchain_openai import OpenAIEmbeddings
 
-from config import settings
+from config import make_http_client, settings
 
 EMBED_BATCH = 32  # 向量化接口单次提交的块数上限
 
@@ -19,6 +19,7 @@ def make_embeddings() -> OpenAIEmbeddings:
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
         check_embedding_ctx_length=False,
+        http_client=make_http_client(),  # 直连智谱（忽略终端代理），避免 Connection error
     )
 
 

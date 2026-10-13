@@ -24,7 +24,7 @@ ai-knowledge-agent/
 ├── README.md            # 项目说明（本文件）
 ├── docker-compose.yml   # 一键启动（前端代理自动转发 /api 到后端）
 ├── backend/             # 后端
-│   ├── main.py          # FastAPI 入口（/api/chat、/api/health）
+│   ├── main.py          # FastAPI 入口（/api/chat、/api/upload、/api/health）
 │   ├── agent.py         # LangGraph 对话图与请求/响应模型
 │   ├── vector_store.py  # ChromaDB 入库与检索
 │   ├── document_loader.py # PDF / Markdown / TXT 加载
@@ -34,7 +34,6 @@ ai-knowledge-agent/
 │   └── requirements.txt
 ├── data/                # 项目数据（挂载给 Docker 后端）
 │   ├── docs/            # 文档，按知识分类目录整理
-│   ├── uploads/         # 上传原文件
 │   └── chroma/          # 本地向量库（Git 忽略）
 ├── frontend/            # 前端
 │   ├── package.json
@@ -81,6 +80,7 @@ docker compose up --build
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查 |
 | POST | `/api/chat` | 对话（body: `{query, history}`） |
+| POST | `/api/upload` | 上传 PDF、Markdown 或 TXT（form-data: `file`、`collection`） |
 
 > 未配置 `LLM_API_KEY` 时，`/api/chat` 返回 mock 回答，保证本地能跑通；
 > 配上 GLM-4-flash / OpenAI 网关后自动走真实 LLM。

@@ -14,3 +14,10 @@ export interface ChatResponse {
   answer: string;
   model: string;
 }
+
+export interface UploadResponse {
+  message: string;
+  collection: string;
+  filename: string;
+  chunks: number;
+}
