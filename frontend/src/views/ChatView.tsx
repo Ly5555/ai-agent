@@ -6,7 +6,7 @@ export default function ChatView() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
-  const [collection, setCollection] = useState("Python学习笔记");
+  const [collection, setCollection] = useState("简历");
   const [files, setFiles] = useState<File[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState("");
