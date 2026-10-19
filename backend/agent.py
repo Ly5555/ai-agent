@@ -2,17 +2,19 @@
 
 扁平化后所有 backend 模块都在同一层，互相直接 import（from config / from vector_store ...）。
 
-当前版本（D9）：
-  route(LLM 自动选知识库) -> retrieve(接 RAG 向量检索) -> grade(判断召回是否够答)
-  -> { 相关: generate | 不相关且 retry<2: rewrite 改写 query -> retrieve 循环 }
-  -> generate（重试耗尽兜底如实说不知道）
+当前版本（D11）：
+  router(LLM 意图分类) → {
+    knowledge → route(选库) → retrieve → grade → { 相关: generate | 不相关: rewrite 循环 }
+    chat → chat_generate（闲聊直答）
+    tool → tool_select → tool_call → tool_reflect（干活后反省）→ generate
+  }
 
-D9 核心：rewrite 节点实现「检索后反省 / Self-RAG」——召回不够就改写 query 重查，
-最多重试 2 次，retry 耗尽交给 generate 诚实兜底。
+D11 核心：基础三件套工具（calculator / current_time / web_search）+ 干活后反省。
+D10 核心：router 入口分流——闲聊不触发检索，工具问题走工具流程，知识库问题才走 RAG。
+D9 核心：rewrite 节点实现「检索后反省 / Self-RAG」——召回不够就改写 query 重查。
 
 TODO（面试进阶，自己补）：
-  - 加工具节点 tool_call + 条件分支
-  - 三个反省机制：回答前 Grounding(D12) / 干活后(D11) / 检索后(D9 ✅)
+  - D12：回答前 Grounding 逐句校验
 """
 import logging
 
@@ -26,6 +28,8 @@ from vector_store import get_collection, query as vs_query
 
 logger = logging.getLogger(__name__)
 from langchain_openai import ChatOpenAI
+
+from tool import TOOLS
 
 # ---------- 请求 / 响应模型 ----------
 class Message(BaseModel):
@@ -54,6 +58,13 @@ class ChatState(TypedDict):
     grade: str
     retry_count: int = 0
     tried: list = []  # D9：已检索过的知识库，reroute 时避免重复
+    intent: str  # D10：router 写入意图分类
+    tool_name: str = ""  # D11：tool_select 写入选中的工具名
+    tool_input: str = ""  # D11：tool_select 写入工具入参
+    tool_result: str = ""  # D11：tool_call 写入工具返回结果
+    tool_name: str
+    tool_input: str
+    tool_result: str
 
 def retrieve(state: ChatState) -> dict:
     # RAG 召回：向量库查询（强制按 collection 过滤），结果存入 state.context
@@ -94,11 +105,125 @@ def _to_ctx(hits):
         for h in hits
     ]
 
+def tool_select(state: ChatState) -> dict:
+    """D11 工具选择节点：用 LLM 判断是否需要工具，需要则选工具并提取入参。
+    返回格式：{"tool_name": "calculator", "tool_input": "123*456"} 或 {"tool_name": "none", "tool_input": ""}
+    """
+    if not settings.llm_api_key:
+        logger.warning("tool_select 无密钥，跳过工具选择")
+        return {"tool_name": "none", "tool_input": ""}
+    
+    tool_list = "\n".join(f"- {name}: {desc}" for name, (fn, desc) in TOOLS.items())
+    prompt = (
+        "你有这些工具：\n" + tool_list + "\n"
+        "判断用户问题是否需要工具。需要就只回 `工具名|入参`（如 `calculator|123*456`），"
+        "不需要就回 `none`。\n"
+        f"用户问题：{state['query']}"
+    )
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            temperature=0,
+            http_client=make_http_client(),
+        )
+        ans = llm.invoke(prompt).content.strip()
+        
+        # 解析结果：工具名|入参 或 none
+        if "none" in ans.lower():
+            logger.info("tool_select 判定不需要工具 | query=%r", state.get("query"))
+            return {"tool_name": "none", "tool_input": ""}
+        
+        # 尝试解析 工具名|入参
+        if "|" in ans:
+            parts = ans.split("|", 1)
+            tool_name = parts[0].strip()
+            tool_input = parts[1].strip() if len(parts) > 1 else ""
+            # 验证工具名是否合法
+            if tool_name in TOOLS:
+                logger.info("tool_select 选中工具=%r 入参=%r | query=%r", 
+                           tool_name, tool_input, state.get("query"))
+                return {"tool_name": tool_name, "tool_input": tool_input}
+            else:
+                logger.warning("tool_select 工具名不合法=%r，降级为 none", tool_name)
+                return {"tool_name": "none", "tool_input": ""}
+        else:
+            logger.warning("tool_select 返回格式不对=%r，降级为 none", ans)
+            return {"tool_name": "none", "tool_input": ""}
+    except Exception:  # noqa: BLE001
+        logger.exception("tool_select 调用 LLM 失败")
+        return {"tool_name": "none", "tool_input": ""}    
+
+def tool_call(state: ChatState) -> dict:
+    """D11 工具调用节点：根据 tool_name 调用对应工具，结果写入 tool_result。"""
+    name = state.get("tool_name")
+    tool_input = state.get("tool_input", "")
+    if name and name in TOOLS:
+        fn, _ = TOOLS[name]
+        result = fn(tool_input)
+        logger.info("tool_call 调用=%r 入参=%r 结果=%r", name, tool_input, result[:100])
+        return {"tool_result": result}
+    logger.warning("tool_call 工具不存在=%r", name)
+    return {"tool_result": ""}
+
+
+def tool_reflect(state: ChatState) -> dict:
+    """D11 干活后反省节点：校验工具结果是否有效。
+    无效则清空 tool_name（让后续 generate 知道工具失败了），有效则保留。
+    """
+    result = state.get("tool_result", "")
+    tool_name = state.get("tool_name", "")
+    
+    # 校验规则：结果为空、含错误关键词、过短都视为无效
+    is_invalid = (
+        not result
+        or "错误" in result
+        or "失败" in result
+        or "为空" in result
+        or len(result) < 3
+    )
+    
+    if is_invalid:
+        logger.warning("tool_reflect 判定工具结果无效=%r，清空 tool_name", result[:50])
+        return {"tool_name": "none", "tool_result": ""}  # 清空，让 generate 走兜底
+    
+    logger.info("tool_reflect 判定工具结果有效 | tool=%r", tool_name)
+    return {}  # 保留原状
 
 
 def generate(state: ChatState) -> dict:
+    # D11：如果有工具结果，优先用工具结果回答
+    tool_result = state.get("tool_result", "")
+    tool_name = state.get("tool_name", "")
+    if tool_result and tool_name and tool_name != "none":
+        if not settings.llm_api_key:
+            return {"answer": f"[mock] 工具结果：{tool_result}"}
+        try:
+            from langchain_openai import ChatOpenAI
+
+            llm = ChatOpenAI(
+                model=settings.llm_model,
+                api_key=settings.llm_api_key,
+                base_url=settings.llm_base_url,
+                temperature=0.3,
+                http_client=make_http_client(),
+            )
+            prompt = (
+                f"用户问了需要工具的问题，工具 {tool_name} 返回了以下结果：\n"
+                f"{tool_result}\n\n"
+                f"请根据工具结果回答用户问题：{state['query']}"
+            )
+            reply = llm.invoke(prompt).content
+            logger.info("generate 使用工具结果回答 | tool=%r", tool_name)
+            return {"answer": reply}
+        except Exception:  # noqa: BLE001
+            logger.exception("generate 调用 LLM 失败（工具模式）")
+            return {"answer": "抱歉，生成回答时出错了，请稍后再试。"}
+    
     # 有密钥就走真实 LLM，否则返回 mock，保证本地能跑通
-       
     if settings.llm_api_key:
         try:
             from langchain_openai import ChatOpenAI
@@ -214,6 +339,90 @@ def rewrite(state: ChatState) -> dict:
         return {"query": state["query"], "retry_count": state.get("retry_count", 0) + 1}
 
 
+def router(state: ChatState) -> dict:
+    """D10 意图路由节点：判断问题类型，决定走哪条路。
+    - knowledge：需要查知识库
+    - chat：闲聊直答
+    - tool：需要外部工具（D11 再接真实工具）
+    """
+    # 前端手动指定了 collection，直接走知识库
+    if state.get("collection"):
+        logger.info("router 跳过（手动指定 collection=%r）", state["collection"])
+        return {"intent": "knowledge"}
+    
+    if not settings.llm_api_key:
+        logger.warning("router 无密钥，默认走知识库")
+        return {"intent": "knowledge"}
+    
+    prompt = (
+        "你是问题分类器。判断用户问题属于以下哪一类，只回复类别名称：\n"
+        "- knowledge：需要查询知识库/文档/手册/笔记/资料才能回答的问题\n"
+        "- chat：闲聊、问候、日常对话（如'你好''谢谢''你是谁'）\n"
+        "- tool：需要实时信息或计算（天气、时间、日期、数学计算等）\n\n"
+        f"用户问题：{state['query']}\n"
+        "类别："
+    )
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            temperature=0,
+            http_client=make_http_client(),
+        )
+        ans = llm.invoke(prompt).content.strip().lower()
+        # 精确匹配优先，包含匹配兜底
+        if "knowledge" in ans:
+            intent = "knowledge"
+        elif "chat" in ans:
+            intent = "chat"
+        elif "tool" in ans:
+            intent = "tool"
+        else:
+            intent = "knowledge"  # 拿不准时默认走知识库
+        logger.info("router 分类=%r | query=%r", intent, state.get("query"))
+        return {"intent": intent}
+    except Exception:  # noqa: BLE001
+        logger.exception("router 调用 LLM 失败，默认走知识库")
+        return {"intent": "knowledge"}
+
+
+def route_by_intent(state: ChatState) -> str:
+    """D10 router 后的条件分支：根据 intent 决定走哪条路。"""
+    intent = state.get("intent", "knowledge")
+    if intent == "chat":
+        return "chat_generate"
+    if intent == "tool":
+        return "tool_select"  # D11：走真实工具流程
+    return "route"  # 默认走知识库
+
+
+def chat_generate(state: ChatState) -> dict:
+    """D10 闲聊生成节点：不带 context，直接聊天。"""
+    if not settings.llm_api_key:
+        return {"answer": f"[mock] 闲聊模式（你说了：{state['query']}）"}
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            temperature=0.5,
+            http_client=make_http_client(),
+        )
+        # 简单闲聊 prompt，可以后续加 history
+        prompt = f"你是一个友好的助手。请简短回复用户的问题。\n\n用户：{state['query']}"
+        reply = llm.invoke(prompt).content
+        logger.info("chat_generate 闲聊回复 | query=%r", state.get("query"))
+        return {"answer": reply}
+    except Exception:  # noqa: BLE001
+        logger.exception("chat_generate 调用 LLM 失败")
+        return {"answer": "抱歉，闲聊回复时出错了。"}
+
+
 def reroute(state: ChatState) -> dict:
     """D9 重路由节点：grade 判 irrelevant 后，换一个还没试过的知识库再查一次。
 
@@ -260,11 +469,38 @@ def build_graph():
     from langgraph.graph import END, StateGraph
 
     graph = StateGraph(ChatState)
+    # D10：新增 router 入口 + 闲聊分支
+    graph.add_node("router", router)
+    graph.add_node("chat_generate", chat_generate)
+    # D11：工具流程节点
+    graph.add_node("tool_select", tool_select)
+    graph.add_node("tool_call", tool_call)
+    graph.add_node("tool_reflect", tool_reflect)
+    # 原有节点
     graph.add_node("route", route)
     graph.add_node("retrieve", retrieve)
     graph.add_node("generate", generate)
     graph.add_node("grade", grade)
-    graph.add_node("rewrite", rewrite)  # D9 新增：改写 query 重查
+    graph.add_node("rewrite", rewrite)  # D9：改写 query 重查
+    
+    # D10：router 条件边——根据 intent 分流
+    graph.add_conditional_edges(
+        "router",
+        route_by_intent,
+        {
+            "route": "route",  # knowledge → 走 route 节点
+            "chat_generate": "chat_generate",  # chat → 走闲聊
+            "tool_select": "tool_select",  # tool → 走工具流程
+        },
+    )
+    graph.add_edge("chat_generate", END)
+    
+    # D11：工具流程 tool_select → tool_call → tool_reflect → generate
+    graph.add_edge("tool_select", "tool_call")
+    graph.add_edge("tool_call", "tool_reflect")
+    graph.add_edge("tool_reflect", "generate")
+    
+    # 原有边
     graph.add_edge("route", "retrieve")
     graph.add_edge("retrieve", "grade")
     # D9：grade 后条件分支——相关就生成，不相关且还能重试就改写 query 重查
@@ -275,7 +511,7 @@ def build_graph():
     )
     graph.add_edge("rewrite", "retrieve")  # D9：改写后重新检索（形成循环）
     graph.add_edge("generate", END)
-    graph.set_entry_point("route")   # ← 入口改成 route
+    graph.set_entry_point("router")  # D10：入口改成 router
     return graph.compile()
 
 
@@ -290,6 +526,10 @@ def run_agent(req: ChatRequest) -> ChatResponse:
                 "context": [],
                 "collection": req.collection,
                 "tried": [],
+                "intent": "",  # D10：router 写入意图分类
+                "tool_name": "",  # D11：工具选择
+                "tool_input": "",  # D11：工具入参
+                "tool_result": "",  # D11：工具结果
             }
         )
         return ChatResponse(answer=result["answer"], model=settings.llm_model)
