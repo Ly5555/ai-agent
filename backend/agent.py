@@ -2,13 +2,17 @@
 
 扁平化后所有 backend 模块都在同一层，互相直接 import（from config / from vector_store ...）。
 
-当前版本：
-  route(LLM 自动选知识库) -> retrieve(接 RAG 向量检索 vector_store.query) -> generate(用检索资料拼 prompt 调 LLM)
+当前版本（D9）：
+  route(LLM 自动选知识库) -> retrieve(接 RAG 向量检索) -> grade(判断召回是否够答)
+  -> { 相关: generate | 不相关且 retry<2: rewrite 改写 query -> retrieve 循环 }
+  -> generate（重试耗尽兜底如实说不知道）
+
+D9 核心：rewrite 节点实现「检索后反省 / Self-RAG」——召回不够就改写 query 重查，
+最多重试 2 次，retry 耗尽交给 generate 诚实兜底。
 
 TODO（面试进阶，自己补）：
-  - generate 接真实 LLM（已预留 config，直连智谱）
   - 加工具节点 tool_call + 条件分支
-  - 三个反省机制：回答前 / 干活后 / 检索后
+  - 三个反省机制：回答前 Grounding(D12) / 干活后(D11) / 检索后(D9 ✅)
 """
 import logging
 
@@ -21,6 +25,7 @@ from config import make_http_client, settings
 from vector_store import get_collection, query as vs_query
 
 logger = logging.getLogger(__name__)
+from langchain_openai import ChatOpenAI
 
 # ---------- 请求 / 响应模型 ----------
 class Message(BaseModel):
@@ -46,7 +51,9 @@ class ChatState(TypedDict):
     answer: str
     context: list  # RAG 检索结果
     collection: str  # 路由节点写入，retrieve 读取
-
+    grade: str
+    retry_count: int = 0
+    tried: list = []  # D9：已检索过的知识库，reroute 时避免重复
 
 def retrieve(state: ChatState) -> dict:
     # RAG 召回：向量库查询（强制按 collection 过滤），结果存入 state.context
@@ -88,8 +95,10 @@ def _to_ctx(hits):
     ]
 
 
+
 def generate(state: ChatState) -> dict:
     # 有密钥就走真实 LLM，否则返回 mock，保证本地能跑通
+       
     if settings.llm_api_key:
         try:
             from langchain_openai import ChatOpenAI
@@ -125,6 +134,126 @@ def generate(state: ChatState) -> dict:
     # 未配置密钥：诚实返回占位，不伪装成真实回答
     return {"answer": f"[mock] 未配置 LLM_API_KEY，返回占位回答（你问了：{state['query']}）"}
 
+def grade(state: ChatState) -> dict:
+    """grade 节点：判断召回的 context 是否足以回答问题。
+    D8 仅把结果写进 state.grade，不分支（分支是 D9 的活）。"""
+    if not settings.llm_api_key:
+        return {"grade": "irrelevant"}  # 无密钥时保守兜底
+    context = state.get("context", [])
+    if not context:
+        return {"grade": "irrelevant"}  # 没召回到资料，肯定不够答
+    ctx_text = "\n\n".join(
+        f"[资料{i}] {item.get('text', '')}" for i, item in enumerate(context, 1)
+    )
+    prompt = (
+        "你是检索质量评委。下面给出用户问题和检索到的资料。\n"
+        "判断资料是否足以回答该问题：只有资料中明确包含答案时才判 relevant，"
+        "含糊、缺失关键信息或完全无关一律判 irrelevant。\n"
+        "不要解释，只回复一个词：relevant 或 irrelevant。\n\n"
+        f"用户问题：{state['query']}\n\n"
+        f"检索到的资料：\n{ctx_text}"
+    )
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            temperature=0,
+            http_client=make_http_client(),
+        )
+        ans = llm.invoke(prompt).content.strip().lower()
+        # 注意：不能写 "relevant" in ans —— "irrelevant" 也含 "relevant" 子串会翻错
+        if "irrelevant" in ans:
+            grade_val = "irrelevant"
+        elif "relevant" in ans:
+            grade_val = "relevant"
+        else:
+            grade_val = "irrelevant"  # 拿不准时保守判 irrelevant
+        logger.info("grade 判定=%s | query=%r", grade_val, state.get("query"))
+        return {"grade": grade_val}
+    except Exception:  # noqa: BLE001
+        logger.exception("grade 调用 LLM 失败")
+        return {"grade": "irrelevant"}
+
+
+def rewrite(state: ChatState) -> dict:
+    """D9 改写节点：grade 判 irrelevant 后，让 LLM 把 query 换个说法再回去重查。
+    这就是「检索后反省 / Self-RAG」——召回不够就改写 query 重查。"""
+    if not settings.llm_api_key:
+        return {"query": state["query"], "retry_count": state.get("retry_count", 0) + 1}
+    prompt = (
+        "你是 query 改写专家。下面的用户问题在知识库里没检索到相关内容，"
+        "请换一种表述方式重新描述这个问题。\n"
+        "要求：\n"
+        "- 保持原始语义不变\n"
+        "- 尝试使用同义词、不同角度、或更宽泛/更具体的关键词\n"
+        "- 只返回改写后的 query，不要任何解释\n\n"
+        f"原始问题：{state['query']}\n"
+        "改写后的问题："
+    )
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            temperature=0.4,  # 改写需要一点创造性，不能完全是 0
+            http_client=make_http_client(),
+        )
+        new_query = llm.invoke(prompt).content.strip()
+        if not new_query:
+            new_query = state["query"]  # LLM 返回空就保留原 query
+        logger.info("rewrite 改写：%r -> %r（retry=%d）",
+                    state["query"], new_query, state.get("retry_count", 0) + 1)
+        return {"query": new_query, "retry_count": state.get("retry_count", 0) + 1}
+    except Exception:  # noqa: BLE001
+        logger.exception("rewrite 调用 LLM 失败，保留原 query")
+        return {"query": state["query"], "retry_count": state.get("retry_count", 0) + 1}
+
+
+def reroute(state: ChatState) -> dict:
+    """D9 重路由节点：grade 判 irrelevant 后，换一个还没试过的知识库再查一次。
+
+    不重新跑 route（route 只负责首次选库），直接在剩余库里挑一个，
+    把 state.collection 改掉并回到 retrieve，形成「检索后反省 -> 换库重试」的循环。
+    """
+    tried = list(state.get("tried", []))
+    cur = state.get("collection")
+    if cur:
+        tried.append(cur)  # 把刚查过的库记下来，避免重复查
+    # 真实存在的逻辑分类（单一来源，不写死）
+    try:
+        valid = sorted({
+            m["collection"]
+            for m in get_collection().get(include=["metadatas"])["metadatas"]
+            if m.get("collection")
+        })
+    except Exception:  # noqa: BLE001
+        valid = []
+    remaining = [c for c in valid if c not in tried]
+    if remaining:
+        nxt = remaining[0]
+        logger.info("reroute 换库：%r -> %r（retry=%d / 已试=%s）",
+                    cur, nxt, state.get("retry_count", 0) + 1, tried)
+        return {"collection": nxt, "tried": tried + [nxt],
+                "retry_count": state.get("retry_count", 0) + 1}
+    # 没更多库可试，放弃重路由，交给 generate 兜底说不知道
+    logger.warning("reroute 无更多库可试，放弃（tried=%s）", tried)
+    return {"collection": "", "tried": tried,
+            "retry_count": state.get("retry_count", 0) + 1}
+
+
+def route_after_grade(state: ChatState) -> str:
+    """grade 后的条件分支：相关直接生成；不相关且还有重试次数就改写 query 重查。"""
+    if state.get("grade") == "relevant":
+        return "generate"
+    if state.get("retry_count", 0) < 2:
+        return "rewrite"  # D9：改写 query 重查（检索后反省 / Self-RAG）
+    return "generate"  # 重试耗尽，兜底生成（会如实说不知道）
+
 
 def build_graph():
     """构建并返回编译后的 LangGraph 图。"""
@@ -134,8 +263,17 @@ def build_graph():
     graph.add_node("route", route)
     graph.add_node("retrieve", retrieve)
     graph.add_node("generate", generate)
+    graph.add_node("grade", grade)
+    graph.add_node("rewrite", rewrite)  # D9 新增：改写 query 重查
     graph.add_edge("route", "retrieve")
-    graph.add_edge("retrieve", "generate")
+    graph.add_edge("retrieve", "grade")
+    # D9：grade 后条件分支——相关就生成，不相关且还能重试就改写 query 重查
+    graph.add_conditional_edges(
+        "grade",
+        route_after_grade,
+        {"generate": "generate", "rewrite": "rewrite"},
+    )
+    graph.add_edge("rewrite", "retrieve")  # D9：改写后重新检索（形成循环）
     graph.add_edge("generate", END)
     graph.set_entry_point("route")   # ← 入口改成 route
     return graph.compile()
@@ -151,6 +289,7 @@ def run_agent(req: ChatRequest) -> ChatResponse:
                 "answer": "",
                 "context": [],
                 "collection": req.collection,
+                "tried": [],
             }
         )
         return ChatResponse(answer=result["answer"], model=settings.llm_model)
