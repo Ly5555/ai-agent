@@ -118,9 +118,13 @@ def tool_select(state: ChatState) -> dict:
     
     tool_list = "\n".join(f"- {name}: {desc}" for name, (fn, desc) in TOOLS.items())
     prompt = (
-        "你有这些工具：\n" + tool_list + "\n"
-        "判断用户问题是否需要工具。需要就只回 `工具名|入参`（如 `calculator|123*456`），"
-        "不需要就回 `none`。\n"
+        "你有这些工具：\n" + tool_list + "\n\n"
+        "判断用户问题是否需要工具。需要就只回 `工具名|入参`，不需要就回 `none`。\n\n"
+        "示例：\n"
+        "- '123乘以456' → calculator|123*456\n"
+        "- '现在几点了' → current_time|\n"
+        "- '今天天气怎么样' → web_search|今天天气\n"
+        "- 'Python 装饰器是什么' → none\n\n"
         f"用户问题：{state['query']}"
     )
     try:
@@ -166,9 +170,17 @@ def tool_call(state: ChatState) -> dict:
     tool_input = state.get("tool_input", "")
     if name and name in TOOLS:
         fn, _ = TOOLS[name]
-        result = fn(tool_input)
-        logger.info("tool_call 调用=%r 入参=%r 结果=%r", name, tool_input, result[:100])
-        return {"tool_result": result}
+        # current_time 不接受参数，其他工具接受一个字符串参数
+        try:
+            if name == "current_time":
+                result = fn()
+            else:
+                result = fn(tool_input)
+            logger.info("tool_call 调用=%r 入参=%r 结果=%r", name, tool_input, result[:100])
+            return {"tool_result": result}
+        except Exception as e:  # noqa: BLE001
+            logger.exception("tool_call 调用工具失败")
+            return {"tool_result": f"工具调用失败: {e}"}
     logger.warning("tool_call 工具不存在=%r", name)
     return {"tool_result": ""}
 

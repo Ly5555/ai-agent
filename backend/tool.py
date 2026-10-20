@@ -35,7 +35,7 @@ def calculator(expression: str) -> str:
 
 
 def web_search(query: str) -> str:
-    """联网搜索（DuckDuckGo，免费无 key），返回 top 结果的标题+摘要+链接。
+    """联网搜索（必应中国版，国内可用），返回 top 结果的标题+摘要+链接。
 
     失败/无结果返回字符串（不抛异常），留给上层反省校验。
     """
@@ -43,18 +43,44 @@ def web_search(query: str) -> str:
     if not query:
         return "搜索词为空。"
     try:
-        from duckduckgo_search import DDGS
-
-        results = DDGS().text(query, max_results=5) or []
+        import requests
+        from bs4 import BeautifulSoup
+        
+        # 必应中国版搜索 URL
+        url = f"https://cn.bing.com/search?q={query}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept-Language": "zh-CN,zh;q=0.9"
+        }
+        
+        response = requests.get(url, headers=headers, timeout=10)
+        response.encoding = "utf-8"
+        soup = BeautifulSoup(response.text, "html.parser")
+        
+        # 解析搜索结果（必应结果在 li.b_algo 中）
+        results = []
+        for item in soup.find_all("li", class_="b_algo", limit=5):
+            title_tag = item.find("h2")
+            if not title_tag:
+                continue
+            
+            title = title_tag.get_text(strip=True)
+            
+            # 提取摘要
+            abstract_tag = item.find("p") or item.find("div", class_="b_caption")
+            abstract = abstract_tag.get_text(strip=True) if abstract_tag else ""
+            
+            # 提取链接
+            link_tag = item.find("a")
+            link = link_tag.get("href", "") if link_tag else ""
+            
+            if title:
+                results.append(f"- {title}: {abstract}（{link}）")
+        
         if not results:
             return "未搜索到相关结果。"
-        lines = []
-        for r in results:
-            title = r.get("title", "")
-            body = r.get("body", "")
-            href = r.get("href", "")
-            lines.append(f"- {title}: {body}（{href}）")
-        return "\n".join(lines)
+        
+        return "\n".join(results)
     except Exception as e:  # noqa: BLE001
         return f"搜索失败: {e}"
 

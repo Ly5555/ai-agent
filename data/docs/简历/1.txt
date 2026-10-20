@@ -1,0 +1,39 @@
+哈哈科技有限公司  Abc123
+vue3
+ ref ===== 基本数据类型
+ reactive ==== 对象类型
+
+ 
+> koa-app@1.0.0 dev
+> NODE_ENV=development nodemon ./src/server.js
+
+[nodemon] 3.1.9
+[nodemon] to restart at any time, enter `rs`
+[nodemon] watching path(s): *.*
+[nodemon] watching extensions: js,mjs,cjs,json
+[nodemon] starting `node ./src/server.js`
+
+
+
+{
+  request: {
+    method: 'POST',
+    url: '/users/register',
+    header: {
+      'access-control-request-headers': '',
+      'user-agent': 'Apifox/1.0.0 (https://apifox.com)',
+      'content-type': 'application/json',
+      accept: '*/*',
+      host: 'localhost:5200',
+      'accept-encoding': 'gzip, deflate, br',
+      connection: 'keep-alive',
+      'content-length': '52'
+    }
+  },
+  response: {
+    status: 404,
+    message: 'Not Found',
+    header: [Object: null prototype] {}
+  },
+
+}

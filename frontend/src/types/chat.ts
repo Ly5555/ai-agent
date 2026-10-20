@@ -21,3 +21,18 @@ export interface UploadResponse {
   filename: string;
   chunks: number;
 }
+
+export interface CollectionInfo {
+  name: string;
+  documents: string[];
+  total_chunks: number;
+  icon: string;
+  color: string;
+}
+
+export interface DocumentDetail {
+  source: string;
+  page: number | null;
+  text: string;
+  score: number;
+}
