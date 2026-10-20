@@ -2,20 +2,23 @@
 
 扁平化后所有 backend 模块都在同一层，互相直接 import（from config / from vector_store ...）。
 
-当前版本（D11）：
+当前版本（D12）：
   router(LLM 意图分类) → {
-    knowledge → route(选库) → retrieve → grade → { 相关: generate | 不相关: rewrite 循环 }
+    knowledge → route(选库) → retrieve → grade → { 相关: generate | 不相关: rewrite 循环 } → grounding（回答前反省）
     chat → chat_generate（闲聊直答）
-    tool → tool_select → tool_call → tool_reflect（干活后反省）→ generate
+    tool → tool_select → tool_call → tool_reflect（干活后反省）→ generate → grounding（回答前反省）
   }
 
+D12 核心：回答前 Grounding 逐句校验 + 知识缺口记录。
 D11 核心：基础三件套工具（calculator / current_time / web_search）+ 干活后反省。
 D10 核心：router 入口分流——闲聊不触发检索，工具问题走工具流程，知识库问题才走 RAG。
 D9 核心：rewrite 节点实现「检索后反省 / Self-RAG」——召回不够就改写 query 重查。
 
 TODO（面试进阶，自己补）：
-  - D12：回答前 Grounding 逐句校验
+  - D13：集成测试日
 """
+from datetime import datetime
+import json
 import logging
 
 from typing import Literal, TypedDict
@@ -193,6 +196,78 @@ def tool_reflect(state: ChatState) -> dict:
     logger.info("tool_reflect 判定工具结果有效 | tool=%r", tool_name)
     return {}  # 保留原状
 
+def grounding(state: ChatState) -> dict:
+    """D12 Grounding 校验节点：逐句校验生成回答是否与 context 一致。
+    目前仅做占位，后续可实现逐句对比、标注来源、纠错等功能。
+    """
+    answer = state.get("answer", "")
+    context = state.get("context", [])
+    query = state.get("query", "")
+    collection = state.get("collection", "")
+
+    if not answer or not context:
+        return {"answer": answer}
+    
+    if not settings.llm_api_key:
+        return {"answer": answer}
+    ctx_text = "\n\n".join(
+        f"[资料{i}] {item.get('text', '')}" for i, item in enumerate(context, 1)
+    )
+    prompt = (
+        "你是答案校验员。下面给出了用户问题的答案和参考资料。\n"
+        "请逐句检查答案中的每一句话，判断它是否有参考资料的依据。\n"
+        "对于每一句，输出：\n"
+        "- 有依据：直接保留原句\n"
+        "- 无依据：改成「这一点我不太确定」\n\n"
+        "只输出修改后的完整答案，不要任何解释。\n\n"
+        f"用户问题：{query}\n\n"
+        f"参考答案：\n{answer}\n\n"
+        f"参考资料：\n{ctx_text}"
+    )
+    try:
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=settings.llm_model,
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            temperature=0,
+            http_client=make_http_client(),
+        )
+        checked_answer = llm.invoke(prompt).content.strip()
+        logger.info("grounding 校验完成 | query=%r", query)
+        uncertainty_count = checked_answer.count("不太确定")
+        # 如果答案被大幅缩短（超过50%）或很短，也视为知识缺口
+        length_ratio = len(checked_answer) / max(len(answer), 1)
+        is_significantly_shortened = length_ratio < 0.5 or len(checked_answer) < 50
+        
+        if uncertainty_count >= 1 or "暂无相关信息" in answer or is_significantly_shortened:
+            _record_gap(query, collection)
+            logger.info("grounding 记录知识缺口 | query=%r | 不确定数=%d | 长度比=%.2f", 
+                       query, uncertainty_count, length_ratio)
+        
+        logger.info("grounding 校验完成 | 原答案长度=%d 校验后长度=%d", len(answer), len(checked_answer))
+        return {"answer": checked_answer}
+    except Exception:  # noqa: BLE001
+        logger.exception("grounding 调用 LLM 失败")
+        return {"answer": answer}  # 出错就返回原答案
+def _record_gap(query: str, collection: str):
+    """D12：把知识缺口写入 data/gaps.jsonl。"""
+    try:
+        import os
+        # 使用绝对路径，确保从任何目录运行都能正确写入
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        gaps_file = os.path.join(project_root, "data", "gaps.jsonl")
+        
+        gap = {
+            "query": query,
+            "collection": collection,
+            "timestamp": datetime.now().isoformat(),
+        }
+        with open(gaps_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(gap, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001
+        logger.exception("记录知识缺口失败")
 
 def generate(state: ChatState) -> dict:
     # D11：如果有工具结果，优先用工具结果回答
@@ -482,6 +557,7 @@ def build_graph():
     graph.add_node("generate", generate)
     graph.add_node("grade", grade)
     graph.add_node("rewrite", rewrite)  # D9：改写 query 重查
+    graph.add_node("grounding", grounding)  # D12：回答前反省
     
     # D10：router 条件边——根据 intent 分流
     graph.add_conditional_edges(
@@ -510,7 +586,8 @@ def build_graph():
         {"generate": "generate", "rewrite": "rewrite"},
     )
     graph.add_edge("rewrite", "retrieve")  # D9：改写后重新检索（形成循环）
-    graph.add_edge("generate", END)
+    graph.add_edge("generate", "grounding")  # D12：generate 后走 grounding 校验
+    graph.add_edge("grounding", END)  # D12：grounding 后结束
     graph.set_entry_point("router")  # D10：入口改成 router
     return graph.compile()
 
