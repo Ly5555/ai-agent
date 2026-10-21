@@ -2,7 +2,7 @@
 // 默认 BASE_URL 为空，走 vite 的 /api 代理转发到后端 8000（本地与 docker 都通用）
 const BASE_URL = import.meta.env.VITE_API_BASE ?? "";
 
-import type { ChatRequest, ChatResponse, CollectionInfo, DocumentDetail, UploadResponse } from "../types/chat";
+import type { ChatRequest, ChatResponse, CollectionInfo, DocumentDetail, GraphData, TraceRecord, UploadResponse } from "../types/chat";
 
 export async function chat(req: ChatRequest): Promise<ChatResponse> {
   const res = await fetch(`${BASE_URL}/api/chat`, {
@@ -172,4 +172,41 @@ export async function updateCollectionIcon(name: string, icon?: string, color?: 
     throw new Error(detail?.detail ?? `更新图标失败: ${res.status}`);
   }
   return res.json();
+}
+
+// ---- D14：真实拓扑 + 执行轨迹 ----
+
+export async function getGraph(): Promise<GraphData> {
+  const res = await fetch(`${BASE_URL}/api/graph`);
+  if (!res.ok) {
+    throw new Error(`获取工作流拓扑失败: ${res.status}`);
+  }
+  return res.json();
+}
+
+const TRACE_KEY = "agent_traces";
+const TRACE_LIMIT = 20;
+
+export function loadTraces(): TraceRecord[] {
+  try {
+    const raw = localStorage.getItem(TRACE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveTrace(record: TraceRecord): TraceRecord[] {
+  const next = [record, ...loadTraces()].slice(0, TRACE_LIMIT);
+  try {
+    localStorage.setItem(TRACE_KEY, JSON.stringify(next));
+  } catch {
+    /* 存储满就放弃持久化，不影响本次会话 */
+  }
+  return next;
+}
+
+export function clearTraces(): void {
+  localStorage.removeItem(TRACE_KEY);
 }

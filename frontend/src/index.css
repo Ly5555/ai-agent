@@ -1,0 +1,19 @@
+/* 全局细粒度样式：只放 inline style 做不了的交互态 */
+
+/* 对话气泡下方的执行轨迹：hover 时给出可点击反馈 */
+.trace-chain {
+  transition: box-shadow 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.trace-chain:hover {
+  border-color: #1677ff;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.18);
+  transform: translateY(-1px);
+}
+
+/* 画布右侧执行轨迹列表项 */
+.trace-item {
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.trace-item:hover {
+  border-color: #91caff !important;
+}

@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect } from "react";
-import { Upload, Button, Input, message, Card, Tag, Empty, Spin, Avatar, Divider, Progress, Popconfirm, Modal } from "antd";
+import { Link } from "react-router-dom";
+import { Upload, Button, Input, message, Card, Tag, Empty, Spin, Avatar, Divider, Progress, Popconfirm, Modal, Popover } from "antd";
 import {
   SendOutlined,
   UploadOutlined,
@@ -14,6 +15,8 @@ import {
   DeleteOutlined,
   PlusOutlined,
   EditOutlined,
+  ApartmentOutlined,
+  NodeIndexOutlined,
   CodeOutlined,
   GlobalOutlined,
   StarOutlined,
@@ -55,10 +58,65 @@ import {
   WifiOutlined,
 } from "@ant-design/icons";
 import type { UploadFile } from "antd/es/upload/interface";
-import { chat, uploadDocument, getCollections, getRawDocument, moveDocument, deleteDocument, createCollection, renameCollection, deleteCollection, updateCollectionIcon } from "../services/api";
-import type { Message, CollectionInfo } from "../types/chat";
+import { chat, uploadDocument, getCollections, getRawDocument, moveDocument, deleteDocument, createCollection, renameCollection, deleteCollection, updateCollectionIcon, saveTrace } from "../services/api";
+import type { ChatMessage, Message, CollectionInfo } from "../types/chat";
+
+// 节点 id → 中文名，用于在气泡下方展示执行轨迹
+const NODE_LABELS: Record<string, string> = {
+  __start__: "开始",
+  router: "意图路由",
+  route: "知识库路由",
+  retrieve: "向量检索",
+  grade: "相关性判别",
+  rewrite: "查询改写",
+  tool_select: "工具选择",
+  tool_call: "工具执行",
+  tool_reflect: "工具反省",
+  generate: "回答生成",
+  chat_generate: "闲聊生成",
+  grounding: "Grounding 校验",
+  __end__: "结束",
+};
 
 const { TextArea } = Input;
+
+// ---- 会话历史：整段对话存 localStorage，刷新/重进都能翻回来 ----
+interface Session {
+  id: string;
+  title: string;
+  updatedAt: number;
+  messages: ChatMessage[];
+}
+
+const SESSIONS_KEY = "agent_sessions";
+const SESSION_LIMIT = 20;
+
+function loadSessions(): Session[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SESSIONS_KEY) || "[]");
+    return Array.isArray(raw) ? raw : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSessions(list: Session[]) {
+  try {
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(list.slice(0, SESSION_LIMIT)));
+  } catch {
+    /* 存满了就放弃持久化，不影响当前会话 */
+  }
+}
+
+function newSessionId() {
+  return `s${Date.now()}${Math.floor(Math.random() * 1000)}`;
+}
+
+function fmtChatTime(ts: number) {
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
 
 // 根据文件扩展名返回图标
 function getFileIcon(filename: string) {
@@ -124,7 +182,10 @@ function getCollectionIcon(iconKey: string) {
 export default function ChatView() {
   const [activeView, setActiveView] = useState<"chat" | "knowledge">("chat");
   const [input, setInput] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [sessionId, setSessionId] = useState<string>(() => newSessionId());
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fileList, setFileList] = useState<UploadFile[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -146,6 +207,59 @@ export default function ChatView() {
   const [renameValue, setRenameValue] = useState("");
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // 首次进入：恢复最近一次对话
+  useEffect(() => {
+    const list = loadSessions();
+    setSessions(list);
+    if (list.length > 0 && list[0].messages.length > 0) {
+      setSessionId(list[0].id);
+      setMessages(list[0].messages);
+    }
+  }, []);
+
+  // 写消息 = 同时落盘到会话列表（按 updatedAt 倒序，最多 20 条）
+  function commitMessages(sid: string, next: ChatMessage[]) {
+    setMessages(next);
+    const firstUser = next.find((m) => m.role === "user");
+    const title = (firstUser?.content ?? "新对话").slice(0, 20);
+    setSessions((prev) => {
+      const rest = prev.filter((s) => s.id !== sid);
+      const merged = [{ id: sid, title, updatedAt: Date.now(), messages: next }, ...rest].sort(
+        (a, b) => b.updatedAt - a.updatedAt,
+      );
+      persistSessions(merged);
+      return merged.slice(0, SESSION_LIMIT);
+    });
+  }
+
+  function startNewSession() {
+    if (messages.length === 0) {
+      message.info("当前已是新对话");
+      return;
+    }
+    setHistoryOpen(false);
+    setSessionId(newSessionId());
+    setMessages([]);
+  }
+
+  function openSession(s: Session) {
+    setHistoryOpen(false);
+    setSessionId(s.id);
+    setMessages(s.messages);
+  }
+
+  function removeSession(id: string) {
+    setSessions((prev) => {
+      const rest = prev.filter((s) => s.id !== id);
+      persistSessions(rest);
+      return rest;
+    });
+    if (id === sessionId) {
+      setSessionId(newSessionId());
+      setMessages([]);
+    }
+  }
 
   // 加载知识库列表
   useEffect(() => {
@@ -211,16 +325,27 @@ export default function ChatView() {
     const q = input.trim();
     if (!q || loading) return;
 
-    const next: Message[] = [...messages, { role: "user", content: q }];
-    setMessages(next);
+    const next: ChatMessage[] = [...messages, { role: "user", content: q }];
+    commitMessages(sessionId, next);
     setInput("");
     setLoading(true);
 
+    // 只把 role/content 发给后端，trace 是前端展示用的
+    const history: Message[] = next.map((m) => ({ role: m.role, content: m.content }));
+
     try {
-      const res = await chat({ query: q, history: next });
-      setMessages([...next, { role: "assistant", content: res.answer }]);
+      const res = await chat({ query: q, history });
+      const trace = res.trace ?? [];
+      const traceTs = Date.now();
+      if (trace.length > 0) {
+        saveTrace({ query: q, intent: res.intent ?? "", trace, ts: traceTs });
+      }
+      commitMessages(sessionId, [
+        ...next,
+        { role: "assistant", content: res.answer, trace, intent: res.intent ?? "", traceTs },
+      ]);
     } catch (e) {
-      setMessages([
+      commitMessages(sessionId, [
         ...next,
         { role: "assistant", content: `出错了：${(e as Error).message}` },
       ]);
@@ -388,6 +513,14 @@ export default function ChatView() {
           <h1 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>个人知识库 Agent</h1>
           <p style={{ margin: 0, fontSize: 12, color: "#999" }}>基于你的笔记和文档回答，支持联网搜索与工具调用</p>
         </div>
+        {/* 页面切换：对话页 ↔ 工作流画布页 */}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <Link to="/">
+            <Button size="small" icon={<ApartmentOutlined style={{ color: "#1677ff" }} />}>
+              Agent 工作流
+            </Button>
+          </Link>
+        </div>
       </div>
 
       {/* 主体内容区 */}
@@ -496,18 +629,19 @@ export default function ChatView() {
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <Avatar
-                        size="small"
-                        icon={getCollectionIcon(item.icon)}
-                        style={{ backgroundColor: item.color || "#1677ff", flexShrink: 0, cursor: "pointer" }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const currentIdx = ICON_OPTIONS.findIndex((o) => o.key === item.icon);
-                          const next = ICON_OPTIONS[(currentIdx + 1) % ICON_OPTIONS.length];
-                          updateCollectionIcon(item.name, next.key).then(() => loadCollections());
-                        }}
-                        title="点击切换图标"
-                      />
+                      <span title="点击切换图标" style={{ display: "inline-flex" }}>
+                        <Avatar
+                          size="small"
+                          icon={getCollectionIcon(item.icon)}
+                          style={{ backgroundColor: item.color || "#1677ff", flexShrink: 0, cursor: "pointer" }}
+                          onClick={(e) => {
+                            e?.stopPropagation();
+                            const currentIdx = ICON_OPTIONS.findIndex((o) => o.key === item.icon);
+                            const next = ICON_OPTIONS[(currentIdx + 1) % ICON_OPTIONS.length];
+                            updateCollectionIcon(item.name, next.key).then(() => loadCollections());
+                          }}
+                        />
+                      </span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         {renaming === item.name ? (
                           <Input
@@ -587,6 +721,92 @@ export default function ChatView() {
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {activeView === "chat" ? (
             <>
+              {/* 会话工具条：新建 + 历史 */}
+              <div
+                style={{
+                  padding: "8px 24px",
+                  borderBottom: "1px solid #f0f0f0",
+                  background: "#fff",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                }}
+              >
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#333" }}>
+                  {sessions.find((s) => s.id === sessionId)?.title ?? "新对话"}
+                </span>
+                <span style={{ fontSize: 11, color: "#bbb" }}>{messages.length} 条消息</span>
+                <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+                  <Popover
+                    open={historyOpen}
+                    onOpenChange={setHistoryOpen}
+                    trigger="click"
+                    placement="bottomRight"
+                    title={<span style={{ fontSize: 13 }}>历史对话</span>}
+                    content={
+                      <div style={{ width: 260, maxHeight: 260, overflow: "auto" }}>
+                        {sessions.length === 0 ? (
+                          <div style={{ fontSize: 12, color: "#999", padding: "12px 0", textAlign: "center" }}>
+                            还没有历史对话
+                          </div>
+                        ) : (
+                          sessions.map((s) => {
+                            const active = s.id === sessionId;
+                            return (
+                              <div
+                                key={s.id}
+                                onClick={() => openSession(s)}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 6,
+                                  padding: "6px 8px",
+                                  borderRadius: 6,
+                                  cursor: "pointer",
+                                  background: active ? "#e6f4ff" : "transparent",
+                                  marginBottom: 2,
+                                }}
+                              >
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div
+                                    style={{
+                                      fontSize: 12,
+                                      color: active ? "#1677ff" : "#333",
+                                      overflow: "hidden",
+                                      textOverflow: "ellipsis",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    {s.title}
+                                  </div>
+                                  <div style={{ fontSize: 10, color: "#aaa" }}>
+                                    {fmtChatTime(s.updatedAt)} · {s.messages.length} 条
+                                  </div>
+                                </div>
+                                <DeleteOutlined
+                                  style={{ fontSize: 12, color: "#ff4d4f", flexShrink: 0 }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    removeSession(s.id);
+                                  }}
+                                />
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    }
+                  >
+                    <Button size="small" icon={<HistoryOutlined />}>
+                      历史
+                    </Button>
+                  </Popover>
+                  <Button size="small" type="primary" ghost icon={<PlusOutlined />} onClick={startNewSession}>
+                    新对话
+                  </Button>
+                </div>
+              </div>
+
               {/* 对话区域 */}
               <div style={{ flex: 1, overflow: "auto", padding: 24 }}>
                 {messages.length === 0 && !loading && (
@@ -598,31 +818,93 @@ export default function ChatView() {
                 )}
 
                 <div style={{ display: "flex", flexDirection: "column", gap: 16, maxWidth: 800, margin: "0 auto" }}>
-                  {messages.map((m, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        display: "flex",
-                        justifyContent: m.role === "user" ? "flex-end" : "flex-start",
-                      }}
-                    >
+                  {messages.map((m, i) => {
+                    const isUser = m.role === "user";
+                    const trace = m.trace ?? [];
+                    return (
                       <div
+                        key={i}
                         style={{
-                          maxWidth: "70%",
-                          padding: "12px 16px",
-                          borderRadius: m.role === "user" ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                          backgroundColor: m.role === "user" ? "#1677ff" : "#f5f5f5",
-                          color: m.role === "user" ? "#fff" : "#333",
-                          lineHeight: 1.6,
+                          display: "flex",
+                          flexDirection: "column",
+                          alignItems: isUser ? "flex-end" : "flex-start",
+                          gap: 6,
                         }}
                       >
-                        <div style={{ fontSize: 12, marginBottom: 4, opacity: 0.7 }}>
-                          {m.role === "user" ? "你" : "Agent"}
+                        <div
+                          style={{
+                            maxWidth: "70%",
+                            padding: "12px 16px",
+                            borderRadius: isUser ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+                            backgroundColor: isUser ? "#1677ff" : "#f5f5f5",
+                            color: isUser ? "#fff" : "#333",
+                            lineHeight: 1.6,
+                          }}
+                        >
+                          <div style={{ fontSize: 12, marginBottom: 4, opacity: 0.7 }}>
+                            {isUser ? "你" : "Agent"}
+                          </div>
+                          <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
                         </div>
-                        <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+
+                        {/* 执行轨迹：本次问题真实走过的节点，点击跳画布高亮 */}
+                        {!isUser && trace.length > 0 && (
+                          <Link
+                            to={`/?trace=${m.traceTs}`}
+                            className="trace-chain"
+                            style={{
+                              display: "flex",
+                              flexWrap: "wrap",
+                              alignItems: "center",
+                              gap: 4,
+                              maxWidth: "78%",
+                              padding: "6px 10px",
+                              background: "#f0f7ff",
+                              border: "1px dashed #91caff",
+                              borderRadius: 8,
+                            }}
+                            title="在工作流画布中查看这条路径"
+                          >
+                            <span
+                              style={{
+                                fontSize: 10,
+                                color: "#1677ff",
+                                fontWeight: 600,
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 3,
+                                marginRight: 2,
+                              }}
+                            >
+                              <NodeIndexOutlined />
+                              执行轨迹
+                            </span>
+                            {trace.map((nid, idx) => (
+                              <span key={`${nid}-${idx}`} style={{ display: "inline-flex", alignItems: "center" }}>
+                                <span
+                                  style={{
+                                    fontSize: 11,
+                                    lineHeight: "18px",
+                                    padding: "0 6px",
+                                    borderRadius: 4,
+                                    background: idx === trace.length - 1 ? "#1677ff" : "#fff",
+                                    color: idx === trace.length - 1 ? "#fff" : "#1d39c4",
+                                    border: `1px solid ${idx === trace.length - 1 ? "#1677ff" : "#d6e4ff"}`,
+                                  }}
+                                >
+                                  {NODE_LABELS[nid] ?? nid}
+                                </span>
+                                {idx < trace.length - 1 && (
+                                  <span style={{ color: "#8c8c8c", fontSize: 10, margin: "0 3px" }}>→</span>
+                                )}
+                              </span>
+                            ))}
+                            <span style={{ fontSize: 10, color: "#1677ff", marginLeft: 6 }}>在画布中查看 →</span>
+                          </Link>
+                        )}
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                   {loading && (
                     <div style={{ display: "flex", justifyContent: "flex-start" }}>
                       <div

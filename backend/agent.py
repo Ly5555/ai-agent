@@ -49,6 +49,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     model: str = "mock"
+    intent: str = ""  # D14：本次意图分类（knowledge / chat / tool）
+    trace: list[str] = []  # D14：实际执行的节点序列，供前端画布高亮
 
 
 # ---------- 智能体图 ----------
@@ -208,16 +210,37 @@ def tool_reflect(state: ChatState) -> dict:
     logger.info("tool_reflect 判定工具结果有效 | tool=%r", tool_name)
     return {}  # 保留原状
 
+CITATION_MARK = "引用来源："
+
+# 回答里出现这些措辞，说明资料确实没覆盖到，记进知识缺口
+NO_INFO_MARKERS = ("不太确定", "暂无相关", "未提供", "没有相关", "没有提到", "不知道", "无法回答")
+
+
+def _split_citation(answer: str) -> tuple[str, str]:
+    """把末尾的「引用来源：…」尾注从答案正文里摘出来。
+
+    尾注是元信息不是事实陈述，参考资料里不可能有它的依据，
+    交给 grounding 逐句校验必然被判「无依据」——D6 和 D12 因此打架。
+    """
+    idx = answer.rfind(CITATION_MARK)
+    if idx <= 0:
+        return answer, ""
+    return answer[:idx].rstrip(), answer[idx:]
+
+
 def grounding(state: ChatState) -> dict:
     """D12 Grounding 校验节点：逐句校验生成回答是否与 context 一致。
-    目前仅做占位，后续可实现逐句对比、标注来源、纠错等功能。
+
+    只校验答案正文，「引用来源：」尾注原样保留。
     """
     answer = state.get("answer", "")
     context = state.get("context", [])
     query = state.get("query", "")
     collection = state.get("collection", "")
 
-    if not answer or not context:
+    body, citation = _split_citation(answer)
+
+    if not body or not context:
         return {"answer": answer}
     
     if not settings.llm_api_key:
@@ -226,14 +249,16 @@ def grounding(state: ChatState) -> dict:
         f"[资料{i}] {item.get('text', '')}" for i, item in enumerate(context, 1)
     )
     prompt = (
-        "你是答案校验员。下面给出了用户问题的答案和参考资料。\n"
-        "请逐句检查答案中的每一句话，判断它是否有参考资料的依据。\n"
-        "对于每一句，输出：\n"
-        "- 有依据：直接保留原句\n"
-        "- 无依据：改成「这一点我不太确定」\n\n"
-        "只输出修改后的完整答案，不要任何解释。\n\n"
+        "你是答案校验员。下面给出了用户问题的答案正文和参考资料。\n"
+        "请逐句检查答案正文中的每一句事实陈述，判断它是否有参考资料的依据。\n"
+        "对每一句：\n"
+        "- 有依据：原样保留该句\n"
+        "- 无依据：直接删除该句，不要留下任何占位文字\n"
+        "- 如果所有句子都没有依据，则整段只输出：这一点我不太确定\n\n"
+        "硬性要求：不要新增句子，不要改写有依据的句子，只允许删除。\n"
+        "只输出处理后的答案正文，不要任何解释。\n\n"
         f"用户问题：{query}\n\n"
-        f"参考答案：\n{answer}\n\n"
+        f"答案正文：\n{body}\n\n"
         f"参考资料：\n{ctx_text}"
     )
     try:
@@ -246,20 +271,27 @@ def grounding(state: ChatState) -> dict:
             temperature=0,
             http_client=make_http_client(),
         )
-        checked_answer = llm.invoke(prompt).content.strip()
+        checked_body = llm.invoke(prompt).content.strip() or body
         logger.info("grounding 校验完成 | query=%r", query)
-        uncertainty_count = checked_answer.count("不太确定")
-        # 如果答案被大幅缩短（超过50%）或很短，也视为知识缺口
-        length_ratio = len(checked_answer) / max(len(answer), 1)
-        is_significantly_shortened = length_ratio < 0.5 or len(checked_answer) < 50
-        
-        if uncertainty_count >= 1 or "暂无相关信息" in answer or is_significantly_shortened:
+        uncertainty_count = checked_body.count("不太确定")
+        # 正文被删掉一半以上，或明确说了找不到信息，才算知识缺口。
+        # 注意：不能用「答案很短」判断——查电话/邮箱这类短答案是对的，不是缺口。
+        length_ratio = len(checked_body) / max(len(body), 1)
+        is_no_info = any(m in checked_body for m in NO_INFO_MARKERS) or any(
+            m in body for m in NO_INFO_MARKERS
+        )
+        is_significantly_shortened = not checked_body or length_ratio < 0.5
+
+        if is_no_info or is_significantly_shortened:
             _record_gap(query, collection)
-            logger.info("grounding 记录知识缺口 | query=%r | 不确定数=%d | 长度比=%.2f", 
+            logger.info("grounding 记录知识缺口 | query=%r | 不确定数=%d | 长度比=%.2f",
                        query, uncertainty_count, length_ratio)
         
-        logger.info("grounding 校验完成 | 原答案长度=%d 校验后长度=%d", len(answer), len(checked_answer))
-        return {"answer": checked_answer}
+        logger.info("grounding 校验完成 | 原正文长度=%d 校验后=%d | 尾注=%s",
+                    len(body), len(checked_body), "有" if citation else "无")
+        # 尾注原样贴回，不参与校验
+        merged = f"{checked_body}\n\n{citation}" if citation else checked_body
+        return {"answer": merged}
     except Exception:  # noqa: BLE001
         logger.exception("grounding 调用 LLM 失败")
         return {"answer": answer}  # 出错就返回原答案
@@ -607,21 +639,36 @@ def build_graph():
 def run_agent(req: ChatRequest) -> ChatResponse:
     try:
         graph = build_graph()
-        result = graph.invoke(
-            {
-                "query": req.query,
-                "history": [m.model_dump() for m in req.history],
-                "answer": "",
-                "context": [],
-                "collection": req.collection,
-                "tried": [],
-                "intent": "",  # D10：router 写入意图分类
-                "tool_name": "",  # D11：工具选择
-                "tool_input": "",  # D11：工具入参
-                "tool_result": "",  # D11：工具结果
-            }
+        init_state = {
+            "query": req.query,
+            "history": [m.model_dump() for m in req.history],
+            "answer": "",
+            "context": [],
+            "collection": req.collection,
+            "tried": [],
+            "intent": "",  # D10：router 写入意图分类
+            "tool_name": "",  # D11：工具选择
+            "tool_input": "",  # D11：工具入参
+            "tool_result": "",  # D11：工具结果
+        }
+
+        # D14：用 stream 采集实际走过的节点，供前端画布高亮执行路径
+        trace: list[str] = []
+        result = dict(init_state)
+        for chunk in graph.stream(init_state, stream_mode="updates"):
+            for node, update in chunk.items():
+                if node == "__start__":
+                    continue
+                trace.append(node)
+                if isinstance(update, dict):
+                    result.update(update)
+
+        return ChatResponse(
+            answer=result.get("answer", ""),
+            model=settings.llm_model,
+            intent=result.get("intent", "") or "",
+            trace=trace,
         )
-        return ChatResponse(answer=result["answer"], model=settings.llm_model)
     except Exception:  # noqa: BLE001
         # D6·③：先记真实错误，再返回安全兜底
         logger.exception("run_agent 执行失败")
@@ -686,3 +733,144 @@ def route(state: ChatState) -> dict:
     chosen = ans if ans in valid else next((c for c in valid if c in ans), "")
     logger.info("route 选定 collection=%r | query=%r", chosen, state.get("query"))
     return {"collection": chosen}
+
+
+# ---------- D14：图结构导出（供前端画布渲染真实拓扑） ----------
+# 节点元信息：中文名 + 类型 + 一句职责说明，前端按 type 着色。
+# 未登记的新节点会走兜底（label=节点名, type=process），加节点不会让画布挂掉。
+NODE_META: dict[str, dict[str, str]] = {
+    "__start__": {"label": "开始", "type": "entry", "desc": "接收用户问题"},
+    "router": {"label": "意图路由", "type": "decision", "desc": "D10 分流：knowledge / chat / tool"},
+    "route": {"label": "知识库路由", "type": "decision", "desc": "D5 按问题自动选库"},
+    "retrieve": {"label": "向量检索", "type": "retrieval", "desc": "Chroma top-k 召回"},
+    "grade": {"label": "相关性判别", "type": "reflection", "desc": "D8 判断检索结果是否可用"},
+    "rewrite": {"label": "查询改写", "type": "reflection", "desc": "D9 不相关则改写重查（循环）"},
+    "tool_select": {"label": "工具选择", "type": "decision", "desc": "D11 选工具并抽取入参"},
+    "tool_call": {"label": "工具执行", "type": "tool", "desc": "D11 真实调用（联网搜索等）"},
+    "tool_reflect": {"label": "工具反省", "type": "reflection", "desc": "D11 判断工具结果是否够用"},
+    "generate": {"label": "回答生成", "type": "generation", "desc": "基于上下文生成答案"},
+    "chat_generate": {"label": "闲聊生成", "type": "generation", "desc": "D10 不查库直接回答"},
+    "grounding": {"label": "Grounding 校验", "type": "reflection", "desc": "D12 回答前反省来源是否支撑"},
+    "__end__": {"label": "结束", "type": "exit", "desc": "返回答案"},
+}
+
+# 分支边的语义标签：(source, target) -> label
+EDGE_LABELS: dict[tuple[str, str], str] = {
+    ("router", "route"): "knowledge",
+    ("router", "chat_generate"): "chat",
+    ("router", "tool_select"): "tool",
+    ("grade", "generate"): "相关",
+    ("grade", "rewrite"): "不相关",
+}
+
+# 回边（构成循环的边），前端用虚线 + 特殊标注
+BACK_EDGES: set[tuple[str, str]] = {("rewrite", "retrieve")}
+
+
+def _layout_layers(node_ids: list[str], edges: list[tuple[str, str]]) -> dict[str, int]:
+    """按最长路径给节点分层（先 DFS 摘掉回边打破环，再在 DAG 上算层号）。"""
+    adj: dict[str, list[str]] = {n: [] for n in node_ids}
+    for s, t in edges:
+        if s in adj and t in adj:
+            adj[s].append(t)
+
+    # 1) DFS 找回边
+    back: set[tuple[str, str]] = set()
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color = {n: WHITE for n in node_ids}
+
+    def dfs(u: str) -> None:
+        color[u] = GRAY
+        for v in adj[u]:
+            if color[v] == GRAY:
+                back.add((u, v))
+            elif color[v] == WHITE:
+                dfs(v)
+        color[u] = BLACK
+
+    start = "__start__" if "__start__" in color else node_ids[0]
+    dfs(start)
+    # 孤立节点也走一遍
+    for n in node_ids:
+        if color[n] == WHITE:
+            dfs(n)
+
+    # 2) 在去掉回边的 DAG 上按拓扑序算"距起点最长路径"作为层号。
+    #    用从起点正向推进（而非反向算到汇点距离），否则像 rewrite 这种
+    #    唯一出边是回边的节点会被误判成汇点、被推到最右侧。
+    dag = {n: [v for v in adj[n] if (n, v) not in back] for n in node_ids}
+    indeg = {n: 0 for n in node_ids}
+    for u in node_ids:
+        for v in dag[u]:
+            indeg[v] += 1
+
+    from collections import deque
+
+    queue = deque([n for n in node_ids if indeg[n] == 0])
+    if start in queue:  # 起点排最前，保证孤立节点不会抢占层号
+        queue.remove(start)
+        queue.appendleft(start)
+    layer = {n: 0 for n in node_ids}
+    while queue:
+        u = queue.popleft()
+        for v in dag[u]:
+            layer[v] = max(layer[v], layer[u] + 1)
+            indeg[v] -= 1
+            if indeg[v] == 0:
+                queue.append(v)
+    return layer
+
+
+def export_graph() -> dict:
+    """导出真实 LangGraph 拓扑：带坐标的 nodes + edges，前端直接渲染。
+
+    单一数据源——后端 build_graph() 加节点，前端画布自动跟着变，无需手工同步。
+    """
+    g = build_graph().get_graph()
+
+    raw_nodes = [nid for nid in g.nodes if nid not in {"__start__"}]
+    node_ids = ["__start__", *raw_nodes, "__end__"]
+    node_ids = list(dict.fromkeys(node_ids))
+
+    raw_edges: list[tuple[str, str, bool]] = []
+    for e in g.edges:
+        raw_edges.append((str(e.source), str(e.target), bool(getattr(e, "conditional", False))))
+
+    # 分层布局：同层节点纵向排开，层与层横向推进
+    layer = _layout_layers(node_ids, [(s, t) for s, t, _ in raw_edges])
+    buckets: dict[int, list[str]] = {}
+    for nid in node_ids:
+        buckets.setdefault(layer.get(nid, 0), []).append(nid)
+
+    x_gap, y_gap = 260, 120
+    max_rows = max((len(v) for v in buckets.values()), default=1)
+    positions: dict[str, tuple[int, int]] = {}
+    for lv, members in buckets.items():
+        offset = (max_rows - len(members)) * y_gap / 2  # 垂直居中
+        for i, nid in enumerate(members):
+            positions[nid] = (lv * x_gap, int(offset + i * y_gap))
+
+    nodes = [
+        {
+            "id": nid,
+            "label": NODE_META.get(nid, {}).get("label", nid),
+            "type": NODE_META.get(nid, {}).get("type", "process"),
+            "desc": NODE_META.get(nid, {}).get("desc", ""),
+            "position": {"x": positions.get(nid, (0, 0))[0], "y": positions.get(nid, (0, 0))[1]},
+        }
+        for nid in node_ids
+    ]
+
+    edges = [
+        {
+            "id": f"{s}->{t}",
+            "source": s,
+            "target": t,
+            "label": EDGE_LABELS.get((s, t), ""),
+            "conditional": cond,
+            "isBack": (s, t) in BACK_EDGES,
+        }
+        for s, t, cond in raw_edges
+    ]
+
+    return {"nodes": nodes, "edges": edges}

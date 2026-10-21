@@ -11,7 +11,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from agent import ChatRequest, ChatResponse, run_agent
+from agent import ChatRequest, ChatResponse, export_graph, run_agent
 from config import settings
 from vector_store import DOCS_DIR, get_collection, ingest_file
 
@@ -57,6 +57,12 @@ def health() -> dict:
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest) -> ChatResponse:
     return run_agent(req)
+
+
+@app.get("/api/graph")
+def graph() -> dict:
+    """导出真实 LangGraph 拓扑（带坐标），供前端画布渲染。"""
+    return export_graph()
 
 
 def _get_existing_collections() -> list[str]:
