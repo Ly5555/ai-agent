@@ -116,18 +116,25 @@ retrieve → grade →(够)→ generate
 
 ## 第三周：沉淀 Agent + 前端亮点 + 面试包装
 
-### D14｜沉淀 Agent 图（新文件 `agents/curator.py`）
-- [ ] 输入：一批答疑记录（先手写一份假的 `faq_raw.md` 模拟群聊问答）
-- [ ] 流程：LLM 聚类高频问题 → 每个问题生成一条规范 FAQ 草稿（问题 + 标准答案 + 所属知识分类）
+### D14｜沉淀 Agent 图（新文件 `backend/curator.py`）
+- [x] 输入：答疑记录 —— 改用 D12 真实攒下的 `data/gaps.jsonl`（比手写 `faq_raw.md` 更有说服力）
+- [x] 流程：LLM 聚类高频问题 → 每个问题生成一条规范 FAQ 草稿（问题 + 标准答案 + 所属知识分类）
 
 **✅ 完成标准**：20 条乱糟糟的答疑 → 自动归纳成 5~8 条 FAQ 草稿。
+> 实测：21 行缺口 → 去重 19 条 → 5 组 → 有依据 2 条 / 待补充 3 条，落盘 `data/faq_draft.md`。
+> 文件位置从 `agents/curator.py` 挪到 `backend/curator.py`（和问答图同级，复用 agent.py 的 run_agent）。
+> 顺带修掉一个真编造 bug：generate 在资料不足时会靠模型常识编出一整篇「Python 装饰器」教程
+> 并把来源写成前端笔记。现在用 grade + 召回相似度双信号（`RECALL_FLOOR=0.45`）拦住，
+> 库里没有的主题直接返回「资料中未提供」并记缺口。
 
-### D15｜FAQ 入库闭环（项目名字级卖点，今天就绪）
-- [ ] 草稿复用 D2 的 ingest 写入向量库（metadata `type=faq`）
-- [ ] 新增 `POST /api/curate` 手动触发沉淀
+### D15｜FAQ 入库闭环（项目名字级卖点，今天就绪）✅ 已于 2026-10-26 完成
+- [x] 草稿复用 D2 的 ingest 写入向量库（新增 `vector_store.ingest_faq`，metadata `type=faq`）
+- [x] 新增 `POST /api/curate` 手动触发沉淀（run_curator → parse_faq_draft → ingest_faq）
 
 **✅ 完成标准**：跑一次沉淀 → 立刻问该 FAQ 覆盖的问题 → 能答上。
 > 至此"消费问答 + 生产知识"闭环完成。
+> 实测：curator.py 的 write_draft 每条 FAQ 产出一个 `## 问题` 标题 + `- **知识分类**` + 答案；
+> parse_faq_draft 解析该格式，`## 待补充` 区整体跳过；ingest_faq 按所属分类入库，type=faq 便于清理与区分。
 
 ### D16｜后端流式输出
 - [ ] 用 `graph.astream_events()`，新增 `/api/chat/stream`（FastAPI `StreamingResponse` 或 `sse-starlette`）
@@ -140,12 +147,14 @@ retrieve → grade →(够)→ generate
 
 **✅ 完成标准**：回答像打字机一样输出。
 
-### D18｜CanvasView 接真实执行链路（差异化王牌）
-- [ ] 替换现在画布上 3 个写死的假节点，改为真实图结构（router / retrieve / grade / rewrite / tool / generate）
-- [ ] 把 D16 推来的节点事件映射到 ReactFlow：**当前执行到哪个节点哪个就高亮**，循环重试时能肉眼看见轨迹回到 rewrite
+### D18｜CanvasView 接真实执行链路（差异化王牌）✅ 已于 2026-10-20 提前完成
+- [x] 替换现在画布上 3 个写死的假节点，改为真实图结构（router / retrieve / grade / rewrite / tool / generate）
+- [x] 把 D16 推来的节点事件映射到 ReactFlow：**当前执行到哪个节点哪个就高亮**，循环重试时能肉眼看见轨迹回到 rewrite
 
 **✅ 完成标准**：演示 D9 的"改写重试"case 时，画布上能看见轨迹转了两圈。
 > 面试现场演这个，比任何 PPT 都有说服力。
+> 注：轨迹来源目前是 `run_agent` 用 `graph.stream(stream_mode="updates")` 采集后随响应返回 + localStorage 存历史记录；
+> D16 的 SSE 上线后可改成边执行边高亮（现在是执行完再放录像）。
 
 ### D19｜知识缺口看板
 - [ ] 新接口 `GET /api/gaps` + 简单页面：列出"被反复问但库里没有"的问题

@@ -65,6 +65,42 @@ def graph() -> dict:
     return export_graph()
 
 
+@app.post("/api/curate")
+def curate() -> dict:
+    """D15：触发沉淀 Agent 生成 FAQ 草稿，并把有答案的 FAQ 灌回向量库，闭环完成。
+
+    流程：run_curator()（读 gaps.jsonl → 聚类 → 复用问答图取答案 → 写 faq_draft.md）
+        → parse_faq_draft()（解析草稿，跳过「待补充」）
+        → ingest_faq()（每条 FAQ 作为 type=faq 块入库，按所属知识分类路由）
+    """
+    from curator import DRAFT_FILE, parse_faq_draft, run_curator
+    from vector_store import ingest_faq
+
+    stat = run_curator()
+    faqs = parse_faq_draft(DRAFT_FILE)
+    ingested = 0
+    skipped = 0
+    for f in faqs:
+        coll = f["collection"]
+        if not coll:
+            logger.warning("curate 跳过无分类 FAQ：%r", f["question"])
+            skipped += 1
+            continue
+        ingested += ingest_faq(f["question"], f["answer"], coll)
+    logger.info(
+        "curate 完成：草稿 %d 条 → 入库 %d 块，跳过无分类 %d 条",
+        len(faqs), ingested, skipped,
+    )
+    return {
+        "gaps": stat.get("gaps", 0),
+        "clusters": stat.get("clusters", 0),
+        "faq_parsed": len(faqs),
+        "faq_ingested": ingested,
+        "faq_skipped": skipped,
+        "draft_path": stat.get("draft_path", ""),
+    }
+
+
 def _get_existing_collections() -> list[str]:
     """获取已有知识库分类名列表。"""
     try:

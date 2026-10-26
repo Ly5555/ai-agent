@@ -49,8 +49,8 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     answer: str
     model: str = "mock"
-    intent: str = ""  # D14：本次意图分类（knowledge / chat / tool）
-    trace: list[str] = []  # D14：实际执行的节点序列，供前端画布高亮
+    intent: str = ""  # D18：本次意图分类（knowledge / chat / tool）
+    trace: list[str] = []  # D18：实际执行的节点序列，供前端画布高亮
 
 
 # ---------- 智能体图 ----------
@@ -70,6 +70,7 @@ class ChatState(TypedDict):
     tool_name: str
     tool_input: str
     tool_result: str
+    record_gap: bool  # D14：沉淀 Agent 复用问答图时关掉，避免自反馈污染 gaps.jsonl
 
 def retrieve(state: ChatState) -> dict:
     # RAG 召回：向量库查询（强制按 collection 过滤），结果存入 state.context
@@ -105,8 +106,9 @@ def retrieve(state: ChatState) -> dict:
 
 def _to_ctx(hits):
     # D6·①：保留整条 hit（含 source/page），供 generate 注入引用来源
+    # D14：带上 score（1-cosine 距离），给 generate 做召回质量判定用
     return [
-        {"text": h["text"], "source": h["source"], "page": h["page"]}
+        {"text": h["text"], "source": h["source"], "page": h["page"], "score": h.get("score", 0)}
         for h in hits
     ]
 
@@ -215,6 +217,10 @@ CITATION_MARK = "引用来源："
 # 回答里出现这些措辞，说明资料确实没覆盖到，记进知识缺口
 NO_INFO_MARKERS = ("不太确定", "暂无相关", "未提供", "没有相关", "没有提到", "不知道", "无法回答")
 
+# D14：召回质量下限（score = 1 - cosine 距离）。低于它且评委也没点头，就不让 generate 开口。
+# 取值来自实测样本：库里没有的主题 top=0.38，确实能答的 top=0.48~0.61。
+RECALL_FLOOR = 0.45
+
 
 def _split_citation(answer: str) -> tuple[str, str]:
     """把末尾的「引用来源：…」尾注从答案正文里摘出来。
@@ -240,7 +246,20 @@ def grounding(state: ChatState) -> dict:
 
     body, citation = _split_citation(answer)
 
-    if not body or not context:
+    if not body:
+        return {"answer": answer}
+
+    if not context:
+        # 知识类问题却一条资料都没检索到：此时 answer 全靠模型自备常识，
+        # 不能当知识库答案发出去（实测「量子计算的基本原理」会给出引用来源：无 的貌似合理答案）。
+        # chat / tool 分支本来就无需检索，直接放行。
+        if state.get("intent", "knowledge") == "knowledge":
+            if state.get("record_gap", True):
+                _record_gap(query, collection)
+            else:
+                logger.info("grounding：零检索判定为缺口，但 record_gap=False（沉淀调用）跳过记录 | query=%r", query)
+            logger.info("grounding：知识类问题零检索依据，替换为兜底回答 | query=%r", query)
+            return {"answer": "知识库中没有检索到相关资料，这一点我不太确定。"}
         return {"answer": answer}
     
     if not settings.llm_api_key:
@@ -282,10 +301,12 @@ def grounding(state: ChatState) -> dict:
         )
         is_significantly_shortened = not checked_body or length_ratio < 0.5
 
-        if is_no_info or is_significantly_shortened:
+        if (is_no_info or is_significantly_shortened) and state.get("record_gap", True):
             _record_gap(query, collection)
             logger.info("grounding 记录知识缺口 | query=%r | 不确定数=%d | 长度比=%.2f",
                        query, uncertainty_count, length_ratio)
+        elif is_no_info or is_significantly_shortened:
+            logger.info("grounding 判定为缺口，但 record_gap=False（沉淀 Agent 调用）跳过记录 | query=%r", query)
         
         logger.info("grounding 校验完成 | 原正文长度=%d 校验后=%d | 尾注=%s",
                     len(body), len(checked_body), "有" if citation else "无")
@@ -341,7 +362,22 @@ def generate(state: ChatState) -> dict:
         except Exception:  # noqa: BLE001
             logger.exception("generate 调用 LLM 失败（工具模式）")
             return {"answer": "抱歉，生成回答时出错了，请稍后再试。"}
-    
+
+    # D14：资料不够时不许模型自由发挥。
+    # 实测「Python 装饰器」这种库里根本没有的主题，靠提示词自觉挡不住——
+    # 模型会编出一整篇教程并把来源写成前端笔记（b.md）。
+    # 判定用两个信号：grade 评委 + 召回相似度。只有一起失败才拦，
+    # 单用 grade 会误伤（「简历摘要」评委连判 3 次 irrelevant，但资料确实是他的简历）。
+    # RECALL_FLOOR 由实测分布取：编造样本 top=0.38，可答样本 top=0.48~0.61。
+    context = state.get("context", [])
+    top_score = max((i.get("score", 0) for i in context), default=0)
+    if not tool_result and state.get("grade") != "relevant" and top_score < RECALL_FLOOR:
+        logger.warning(
+            "generate：召回不足以作答，返回兜底回答不送 LLM | query=%r | grade=%r top_score=%.3f(阈值%.2f)",
+            state.get("query"), state.get("grade"), top_score, RECALL_FLOOR,
+        )
+        return {"answer": "资料中未提供与该问题相关的信息，这一点我不太确定。"}
+
     # 有密钥就走真实 LLM，否则返回 mock，保证本地能跑通
     if settings.llm_api_key:
         try:
@@ -636,7 +672,13 @@ def build_graph():
     return graph.compile()
 
 
-def run_agent(req: ChatRequest) -> ChatResponse:
+def run_agent(req: ChatRequest, record_gap: bool = True) -> ChatResponse:
+    """跑一次问答图。
+
+    record_gap=False 供沉淀 Agent（curator.py）复用问答图时使用：
+    否则 grounding 会把「这次也没答上」的问题再写回 gaps.jsonl，
+    每跑一次沉淀就给自己喂的输入掺一批新记录，形成自反馈污染。
+    """
     try:
         graph = build_graph()
         init_state = {
@@ -650,9 +692,10 @@ def run_agent(req: ChatRequest) -> ChatResponse:
             "tool_name": "",  # D11：工具选择
             "tool_input": "",  # D11：工具入参
             "tool_result": "",  # D11：工具结果
+            "record_gap": record_gap,  # D14：沉淀 Agent 调用时关闭缺口记录
         }
 
-        # D14：用 stream 采集实际走过的节点，供前端画布高亮执行路径
+        # D18：用 stream 采集实际走过的节点，供前端画布高亮执行路径
         trace: list[str] = []
         result = dict(init_state)
         for chunk in graph.stream(init_state, stream_mode="updates"):
@@ -735,7 +778,7 @@ def route(state: ChatState) -> dict:
     return {"collection": chosen}
 
 
-# ---------- D14：图结构导出（供前端画布渲染真实拓扑） ----------
+# ---------- D18：图结构导出（供前端画布渲染真实拓扑） ----------
 # 节点元信息：中文名 + 类型 + 一句职责说明，前端按 type 着色。
 # 未登记的新节点会走兜底（label=节点名, type=process），加节点不会让画布挂掉。
 NODE_META: dict[str, dict[str, str]] = {

@@ -11,6 +11,7 @@
 运行（在 backend/ 下，扫描并入库所有知识分类文档）：
     .venv/bin/python vector_store.py
 """
+import hashlib
 import logging
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,40 @@ def ingest_file(
     ids = [f"{collection_name}:{path.name}:{i}" for i in range(len(texts))]
     vector_collection.add(ids=ids, documents=texts, metadatas=metadatas, embeddings=vectors)
     logger.info("向量库写入完成：collection=%s source=%s 块数=%d", collection_name, display_name, len(texts))
+    return len(texts)
+
+
+def ingest_faq(question: str, answer: str, collection_name: str, source: str = "") -> int:
+    """D15：把一条 FAQ（问题+答案）作为 type=faq 的块写入向量库，返回块数。
+
+    与 ingest_file 不同，FAQ 没有真实文件，直接吃文本。
+    metadata 复用 note 块的字段（collection/source），并加 type=faq 便于区分与清理。
+    幂等：入库前先按 source+type 删掉旧块，重跑 curate 不会翻倍；
+    删旧块时忽略分类，避免问题被重新归类后在前库留脏副本。
+    """
+    display = source or f"FAQ：{question}"
+    docs = [
+        {
+            "text": f"问：{question}\n答：{answer}",
+            "metadata": {
+                "collection": collection_name,
+                "source": display,
+                "type": "faq",
+            },
+        }
+    ]
+    texts, metadatas = split_chunks(docs)
+    if not texts:
+        logger.warning("FAQ 入库跳过：未切出文本块（%s）", display)
+        return 0
+
+    vectors = embed_texts(texts)
+    col = get_collection()
+    col.delete(where={"$and": [{"source": display}, {"type": "faq"}]})
+    faq_id = hashlib.md5(question.encode("utf-8")).hexdigest()[:16]
+    ids = [f"faq:{collection_name}:{faq_id}:{i}" for i in range(len(texts))]
+    col.add(ids=ids, documents=texts, metadatas=metadatas, embeddings=vectors)
+    logger.info("FAQ 入库完成：collection=%s source=%s 块数=%d", collection_name, display, len(texts))
     return len(texts)
 
 
