@@ -136,11 +136,13 @@ retrieve → grade →(够)→ generate
 > 实测：curator.py 的 write_draft 每条 FAQ 产出一个 `## 问题` 标题 + `- **知识分类**` + 答案；
 > parse_faq_draft 解析该格式，`## 待补充` 区整体跳过；ingest_faq 按所属分类入库，type=faq 便于清理与区分。
 
-### D16｜后端流式输出
-- [ ] 用 `graph.astream_events()`，新增 `/api/chat/stream`（FastAPI `StreamingResponse` 或 `sse-starlette`）
-- [ ] 逐 token 推送，并把节点事件（retrieve / grade / … 开始执行）一并推给前端
+### D16｜后端流式输出 ✅ 已于 2026-10-27 完成（后端 SSE，前端 D17 待接）
+- [x] 新增 `POST /api/chat/stream`（FastAPI 自带 `StreamingResponse`，media_type=text/event-stream，不引 sse-starlette）
+- [x] `agent.stream_agent` 异步生成器：`graph.astream(stream_mode="updates")` 边跑边 yield 节点事件；图跑完把最终答案按 8 字切块当 token 推，结束发 `done`（含 answer/intent/trace）
+- [ ] （增强，未做）真·LLM 逐 token 流：需把 `generate` 的 `llm.invoke` 改 `llm.astream` 并用 `graph.astream_events()` 发自定义事件
 
-**✅ 完成标准**：curl 能看到 SSE 数据流。
+**✅ 完成标准**：curl 能看到 SSE 数据流（node / token / done 三类事件）。
+> 注意：当前 token 是「最终答案切片」而非 LLM 真·token 流（generate 仍用同步 invoke）。D17 前端按 data 行解析即可，两种流对前端透明。
 
 ### D17｜前端打字机
 - [ ] `ChatView.tsx` + `services/api.ts` 接 SSE（`EventSource` 或 fetch reader），逐字渲染

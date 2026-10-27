@@ -717,6 +717,66 @@ def run_agent(req: ChatRequest, record_gap: bool = True) -> ChatResponse:
         logger.exception("run_agent 执行失败")
         return ChatResponse(answer="抱歉，服务出错了，请稍后再试。", model="mock")
 
+
+async def stream_agent(req: ChatRequest):
+    """D16：异步流式跑图，逐事件 yield 一个 SSE 友好的字典（不替换 run_agent，供 /api/chat/stream 复用）。
+
+    事件格式：
+      {"type": "node", "node": <节点名>}                —— 某节点执行完毕（前端可用来高亮画布）
+      {"type": "token", "text": <片段>}                 —— 答案分块（模拟 token 流）
+      {"type": "done", "answer": <全文>, "intent": ..., "trace": [...]}  —— 结束
+
+    说明：当前 generate/grounding 用 `llm.invoke` 同步出整段答案，所以 token 是「把最终答案切片」推出来的，
+    不是 LLM 真·逐 token 流。要做真·token 流需把 generate 的 llm 调用改成 `llm.astream` 并用
+    `graph.astream_events()` 发自定义事件（见 D16 提示），属于增强项，不阻塞 D16 达标。
+    """
+    import asyncio
+
+    try:
+        graph = build_graph()
+        init_state = {
+            "query": req.query,
+            "history": [m.model_dump() for m in req.history],
+            "answer": "",
+            "context": [],
+            "collection": req.collection,
+            "tried": [],
+            "intent": "",
+            "tool_name": "",
+            "tool_input": "",
+            "tool_result": "",
+            "record_gap": True,  # 流式问答同样记录缺口
+        }
+        answer = ""
+        intent = ""
+        trace: list[str] = []
+        # stream_mode="updates"：每跑完一个节点就吐一次 {节点名: 该节点返回的 dict}
+        async for chunk in graph.astream(init_state, stream_mode="updates"):
+            for node, update in chunk.items():
+                if node == "__start__":
+                    continue
+                trace.append(node)
+                yield {"type": "node", "node": node}
+                if isinstance(update, dict):
+                    if update.get("answer"):
+                        answer = update["answer"]
+                    if update.get("intent"):
+                        intent = update["intent"]
+        # 答案切片推送（每 8 字一段，加微小延迟让前端看出打字机效果）
+        step = 8
+        for i in range(0, len(answer), step):
+            yield {"type": "token", "text": answer[i : i + step]}
+            await asyncio.sleep(0.012)
+        yield {"type": "done", "answer": answer, "intent": intent, "trace": trace}
+    except Exception:  # noqa: BLE001
+        logger.exception("stream_agent 执行失败")
+        yield {
+            "type": "done",
+            "answer": "抱歉，服务出错了，请稍后再试。",
+            "intent": "",
+            "trace": [],
+        }
+
 def route(state: ChatState) -> dict:
     """路由节点：按用户问题用 LLM 自动选知识库，结果写入 state.collection。"""
     # 手动指定了库则跳过分类（可选 override）

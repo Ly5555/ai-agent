@@ -4,11 +4,13 @@
     cd backend && uvicorn main:app --reload --port 8000
 """
 import logging
+import json
 import shutil
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent import ChatRequest, ChatResponse, export_graph, run_agent
@@ -147,6 +149,21 @@ def _auto_classify(text_preview: str, filename: str, existing: list[str]) -> str
     except Exception as e:
         logger.warning("自动分类失败，使用默认分类：%s", e)
     return "未分类"
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(req: ChatRequest) -> StreamingResponse:
+    """D16：SSE 流式问答。事件流格式见 agent.stream_agent 的 yield 字典。
+
+    用 FastAPI 自带 StreamingResponse（text/event-stream），不引第三方 sse 库。
+    """
+    from agent import stream_agent
+
+    async def event_gen():
+        async for ev in stream_agent(req):
+            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_gen(), media_type="text/event-stream")
 
 
 @app.post("/api/upload", response_model=UploadResponse)
